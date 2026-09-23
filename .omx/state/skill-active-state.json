@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "active": true,
+  "skill": "tdd",
+  "keyword": "TDD",
+  "phase": "reviewing",
+  "activated_at": "2026-09-22T15:41:45.701Z",
+  "updated_at": "2026-09-23T04:54:11.276Z",
+  "source": "keyword-detector",
+  "input_lock": null
+}

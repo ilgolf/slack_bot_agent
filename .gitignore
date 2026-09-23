@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environment / secrets
+.env
+
+# Per-thread markdown context store
+/thread-context/
+
+# Runtime logs
+/logs/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

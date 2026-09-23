@@ -1,0 +1,5 @@
+{
+  "last_turn_at": "2026-09-23T04:54:11.250Z",
+  "turn_count": 58,
+  "last_agent_output": "Linear GraphQL 직접 연동을 구현하고 서버에 반영했습니다.\n\n- PC별 `.env`의 `LINEAR_API_KEY"
+}
