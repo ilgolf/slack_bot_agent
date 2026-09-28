@@ -1,178 +1,630 @@
-# piplup-agent-v2
+# Slack Development Agent
 
-A from-scratch redesign of `piplup-agent`, run as its own separate Slack bot.
+기획서를 기반으로 **Linear → Code → Notion** 개발 프로세스를 하나의 통합 Agent Workflow로 연결하여,
+개발 과정에서 발생하는 반복적인 handoff와 문서화 비용을 줄이고 **개발 Process Lead Time을 단축**하는 것을 목표로 합니다.
 
-See `plan.md` for the design summary and the TDD-driven build plan, and `CLAUDE.md`
-for the workflow this project is built with (one test at a time, in plan order).
+---
 
-## Setup
+## Core KPI
 
-```bash
-uv sync
-cp .env.example .env  # fill in SLACK_* / *_API_KEY as needed
-uv run pytest
-uv run uvicorn src.main:app --reload
-```
+> **기획서 기반 Linear + Code + Notion 통합 Agent를 통해 개발 Process Lead Time 감소**
 
-## Slack Socket Mode
+주요 개선 대상은 다음과 같습니다.
 
-To receive Slack events without a public URL or ngrok tunnel, enable **Socket
-Mode** in the Slack app configuration, generate an app-level token with the
-`connections:write` scope, and set `SLACK_APP_TOKEN` in `.env`. Then run:
+- 기획 문서에서 개발 Ticket 생성까지의 시간 단축
+- Ticket 이해 및 Code 작업 착수까지의 시간 단축
+- 구현 → 테스트 → 완료 보고 과정 자동화
+- 개발 완료 결과를 기반으로 Notion Domain Document 자동 갱신
+- Linear / Code / Notion 사이의 수동 Handoff 최소화
 
-```bash
-uv run python -m src.socket_mode
-```
-
-Logs are written to `logs/slack-bot.log`, rotating at 5 MB and retaining five
-previous files. Watch the current log with `tail -f logs/slack-bot.log`.
-
-## Linear 직접 연동
-
-각 PC의 로컬 봇은 그 PC 사용자의 Linear Personal API Key로 Linear GraphQL API에 직접
-연결합니다. MCP 서버나 OAuth 콜백은 필요하지 않습니다. Linear Settings → Security &
-Access → Personal API keys에서 키를 발급해 `.env`에만 넣고, 키를 저장소나 Slack 메시지에
-공유하지 마세요.
-
-```bash
-LINEAR_API_KEY=lin_api_...
-```
-
-봇을 재시작한 뒤 다음을 사용할 수 있습니다.
-
-- `Linear 연결 상태 확인`, `Linear 팀 조회`, `Linear 이슈 조회`, `Linear 이슈 조회 ENG-123`
-- 이슈 생성: `Linear 이슈 생성` 다음 줄에 `팀 ID: <UUID>`, `제목: <제목>`, 선택적으로 `설명: <내용>`
-- 이슈 수정: `Linear 이슈 수정 ENG-123` 다음 줄에 `제목:`, `설명:`, `상태 ID:` 중 변경할 필드
-
-조회는 즉시 실행됩니다. 이슈 생성·수정은 먼저 미리보기를 보여주며 같은 Slack 스레드의
-`실행`에서 한 번만 적용됩니다. `취소`는 보류된 Linear 작업만 폐기합니다. API key, GraphQL
-요청·응답 본문, Authorization 헤더는 Slack 응답과 로그에 기록하지 않습니다. 키가 노출되면
-Linear에서 즉시 폐기하고 새 키로 `.env`를 교체한 뒤 봇을 재시작하세요.
-
-## Agent flow
-
-봇은 Slack 멘션을 받은 뒤, 필요한 최소 파일만 읽고 근거와 함께 답하도록 동작합니다.
-
-### Code-agent routing and confirmation
-
-모든 Slack 메시지는 먼저 typed router를 통과합니다. 현재 메시지가 스레드 과거 단어보다
-우선하므로, Linear라는 단어가 들어 있어도 프로젝트 코드 요청은 Linear workspace API로
-잘못 전달되지 않습니다.
-
-| 요청 | 경로 | 확인 |
-| --- | --- | --- |
-| `piplup-agent-v2 Linear 연동 test 실행` | 프로젝트 코드 작업 | 계획 미리보기 → `실행` |
-| `Linear 이슈 조회` | Linear 조회 | 즉시 실행 |
-| `Linear 이슈 생성 ...` | Linear 변경 | 미리보기 → `실행` |
-| `스레드 요약해서 md 파일로 만들어` | 파일 생성 | 미리보기 → `저장` |
-
-읽기 전용 code-agent loop는 한 번에 registry에 등록된 도구 하나만 고르고 호출·결과 크기
-예산 안에서 실행합니다. 프로젝트 읽기/검색, Git 읽기, 고정 검증 명령만 제공하며 파일 쓰기와
-검증은 여전히 확인이 필요합니다. 임의 shell·HTTP·GraphQL, dependency install, 삭제·rename,
-Git push는 등록하지 않습니다.
-
-기본 도구 호출 예산은 16회이며 `.env`의 `AGENT_MAX_TOOL_ITERATIONS`로 조정할 수 있습니다.
-이 값을 늘려도 중복 호출·결과 크기·경로 정책은 계속 적용됩니다.
-
-같은 스레드에 `trace 요약`을 보내면 도구명·분류·결과 크기·시간·근거 경로만 보입니다.
-Slack 본문, prompt, 파일/생성물 내용, API key, Authorization header, Linear mutation body는
-trace와 로그에 기록하지 않습니다. 보류 미리보기는 메모리에만 있으므로 봇 재시작 뒤에는
-다시 생성해야 하며, 지원되는 작업은 15분 뒤 만료됩니다.
+### Target Flow
 
 ```text
-Slack 멘션
-  → “분석 중입니다…” 응답
-  → 현재 요청 + 같은 스레드의 이전 맥락 확인
-  → 대상 프로젝트와 요청 유형 분류
-  → 빠른 경로 또는 도구 제어 루프 실행
-  → 근거 파일·한계를 포함한 Slack 스레드 답변
+Planning Document
+    ↓
+Linear Ticket
+    ↓
+Code Implementation
+    ↓
+Test / Compile / Code Analytics
+    ↓
+Completion Report
+    ↓
+Notion Domain Documentation
 ```
 
-### 1. 대상 프로젝트 확인
+---
 
-현재 메시지에 프로젝트명이 있으면 그것을 우선 사용합니다. 현재 메시지에 없다면 같은
-스레드에서 이전에 언급된 프로젝트명을 사용합니다. 어느 쪽에서도 대상을 찾지 못하면
-파일을 탐색하거나 LLM을 호출하지 않고 프로젝트명을 요청합니다.
+## Architecture
 
-분석 대상은 `PROJECTS_ROOT`(기본값 `~/orca/projects`) 아래에 이미 존재하는 로컬
-프로젝트뿐입니다. GitHub URL은 자동으로 clone하거나 원격에서 읽지 않습니다.
+### Technology
 
-### 2. 좁은 요청의 빠른 경로
 
-README 또는 특정 파일 요약은 넓은 탐색을 하지 않습니다.
+| Layer               | Technology              | Responsibility                                                        |
+| ------------------- | ----------------------- | --------------------------------------------------------------------- |
+| Agent Orchestration | LangGraph               | Agent routing, handoff, retry loop, workflow orchestration            |
+| LLM Tool Chain      | LangChain               | LLM invocation, tool binding, structured output, tool execution chain |
+| Linear Agent        | Linear API / MCP        | Ticket 조회, 생성, 수정, 상태 업데이트                                            |
+| Code Agent          | Code Tool / Shell / Git | Repository 분석, Planning, 구현, 테스트, 정적 분석                               |
+| Notion Agent        | Notion API / MCP        | 완료 보고 분석, Domain Document 생성 및 수정                                     |
+| Interface           | Slack Bot               | 사용자 요청 입력, 진행 상황 공유, 결과 전달                                            |
 
-| 요청 예시 | 실행 |
-| --- | --- |
-| `my-project README.md 요약해줘` | `my-project/README.md`만 읽고 요약 |
-| 같은 스레드에서 `README.md 요약해줘` | 이전 맥락의 프로젝트 README만 읽고 요약 |
-| `my-project src/service.py 요약해줘` | 지정한 파일만 읽고 요약 |
 
-파일을 읽지 못하면 추측하지 않고 이유를 응답합니다.
+---
 
-### 3. 넓은 분석의 도구 제어 루프
+## High-Level Agent Flow
 
-코드 흐름·도메인 정책처럼 넓은 질문은 LLM이 다음 행동을 하나씩 선택합니다.
+```mermaid
+flowchart TD
+    U[Slack User] --> O[LangGraph Base LLM Agent Orchestrator]
+
+    O --> LA[Linear Agent]
+    O --> CA[Code Agent]
+    O --> NA[Notion Agent]
+
+    LA --> LR[Linear Result / Ticket Artifact]
+    LR --> O
+
+    CA --> CR[Code Complete Report]
+    CR --> O
+
+    NA --> NR[Notion Update Result]
+    NR --> O
+
+    O --> R[Slack Result / Progress Update]
+```
+
+Orchestrator는 각 Agent를 직접 구현하는 역할이 아니라, 현재 Goal과 Agent 실행 결과를 기준으로 **다음에 실행할 Agent를 결정하고 Handoff를 관리**합니다.
 
 ```text
-LLM: 최종 답변 또는 다음 도구 호출 하나 선택
-  → 정책 검사: 대상 프로젝트, 상대 경로, 허용 도구, 호출 예산 검증
-  → read_file 또는 list_files 실행
-  → 결과를 LLM에 전달
-  → 충분한 근거를 얻으면 최종 답변
+Agent Output
+    ↓
+Orchestrator
+    ↓
+Determine Next Action
+    ↓
+Next Agent
 ```
 
-한 번에 여러 도구를 호출하거나, 다른 프로젝트를 탐색하거나, 같은 도구·인자를 반복하면
-실행을 중단합니다. 파일을 실제로 읽지 않은 일반 분석 답변도 거부합니다.
+---
 
-### LangChain 기술 워크플로
+# Agent Flow
 
-`LangChainAnalysisAgent`는 제공자별 SDK 차이를 숨기는 LangChain chat model 인터페이스를
-사용합니다. `LLM_PROVIDER=openai`이면 `ChatOpenAI`, `LLM_PROVIDER=anthropic`이면
-`ChatAnthropic`을 생성하고, 둘 다 같은 분석·도구 제어 코드로 연결합니다.
+## 1. Linear Agent
+
+Linear Agent는 기획서, Story, Plan Document 등의 Context를 읽고 개발 가능한 Ticket 형태로 변환합니다.
+
+```mermaid
+flowchart TD
+    START([Start]) --> READ[Read Story Ticket / Planning Documents]
+
+    READ --> UNDERSTAND[Understand Requirement & Goal]
+
+    UNDERSTAND --> SPEC[Generate / Refine Ticket Specification]
+
+    SPEC --> EXECUTE[Create Ticket & Fill Content<br/>through Linear Tool Chain]
+
+    EXECUTE --> VERIFY[Verify Ticket Content]
+
+    VERIFY --> CHECK{Goal Complete?}
+
+    CHECK -- No --> UNDERSTAND
+    CHECK -- Yes --> STATUS[Complete & Update Status]
+
+    STATUS --> RESULT[Publish Linear Result]
+
+    RESULT --> END([End])
+```
+
+### Responsibilities
+
+- 기획서 및 관련 Story Context 조회
+- Requirement와 Acceptance Criteria 추출
+- 개발 가능한 수준으로 Ticket 구체화
+- Linear Ticket 생성 및 내용 보완
+- Ticket 생성 결과 검증
+- Ticket 상태 업데이트
+- Orchestrator에 결과 반환
+
+### Example Output
+
+```json
+{
+  "agent": "linear",
+  "status": "completed",
+  "ticketId": "DEV-123",
+  "goal": "Implement shipment delay notification",
+  "acceptanceCriteria": [
+    "Detect delayed shipment",
+    "Create notification event",
+    "Expose notification through API"
+  ]
+}
+```
+
+---
+
+## 2. Code Agent
+
+Code Agent는 Linear Ticket을 입력으로 받아 Repository를 분석하고, 실행 가능한 Plan을 작성한 후 실제 구현과 검증까지 수행합니다.
+
+```mermaid
+flowchart TD
+    START([Start]) --> READ[Read Linear Ticket]
+
+    READ --> EXPLORE[Explore Repository]
+
+    EXPLORE --> PLAN[Reason & Create Implementation Plan]
+
+    PLAN --> PLANFILE[Write plan.md]
+
+    PLANFILE --> IMPLEMENT[Execute Code Write Process]
+
+    IMPLEMENT --> VALIDATE[Run Test / Compile / Code Analytics]
+
+    VALIDATE --> RESULT{Validation Result}
+
+    RESULT -- Implementation Failure --> IMPLEMENT
+
+    RESULT -- Plan Mismatch --> PLAN
+
+    RESULT -- Success --> REPORT[Export Complete Report]
+
+    REPORT --> UPDATE[Update Execution Result / Artifact]
+
+    UPDATE --> END([End])
+```
+
+### Responsibilities
+
+- Linear Ticket 및 Acceptance Criteria 조회
+- Repository 구조 및 관련 Code Context 탐색
+- Implementation Plan 생성
+- `plan.md` 작성
+- Code 작성 및 수정
+- Unit / Integration Test 수행
+- Compile / Build 수행
+- Static Analysis / Code Analytics 수행
+- 실패 원인에 따른 Local Retry 또는 Re-plan
+- 최종 Complete Report 생성
+
+### Slack 확인형 코드 작업
+
+현재 Slack 코드 변경 요청은 실제 파일을 조사한 뒤, 승인 파일 범위·파일별 diff·고정 검증 명령·자동
+복구 예산을 미리 보여줍니다. 같은 스레드에서 `실행`으로 확인하기 전에는 파일을 변경하지 않습니다.
+실행 후 검증이 실패하면 승인 파일 안에서만 최대 2회 재읽기·수정·재검증을 시도합니다. 범위 밖 파일,
+보호 파일, 반복된 diff/실패, 검증 환경 오류는 자동 복구하지 않고 안전한 최종 결과로 끝냅니다.
+`trace 요약`은 복구 횟수와 종료 이유를 포함하지만 파일 내용이나 모델 추론은 기록하지 않습니다.
+
+### `plan.md`
+
+`plan.md`는 Code Agent의 단순 메모가 아니라 **Implementation Contract** 역할을 합니다.
+
+```markdown
+# Goal
+
+Shipment delay notification 기능 구현
+
+## Scope
+
+- Shipment delay detector
+- Notification event publisher
+- Notification API
+
+## Files
+
+- ShipmentService.kt
+- NotificationService.kt
+- ShipmentController.kt
+
+## Implementation
+
+1. Shipment delay condition 추가
+2. Notification event 발행
+3. API response 확장
+4. Test 추가
+
+## Validation
+
+- Unit Test
+- Integration Test
+- Gradle Build
+```
+
+### Complete Report Example
+
+```json
+{
+  "agent": "code",
+  "status": "completed",
+  "ticketId": "DEV-123",
+  "plan": "plan.md",
+  "changedFiles": [
+    "ShipmentService.kt",
+    "NotificationService.kt"
+  ],
+  "test": {
+    "passed": 42,
+    "failed": 0
+  },
+  "build": "passed",
+  "summary": "Shipment delay notification implementation completed."
+}
+```
+
+---
+
+## 3. Notion Agent
+
+Notion Agent는 Code Agent가 생성한 Complete Report를 기반으로 기존 Domain Document를 탐색하고 필요한 문서를 업데이트합니다.
+
+```mermaid
+flowchart TD
+    START([Start]) --> REPORT[Read Complete Report]
+
+    REPORT --> DOCS[Read Existing Domain Documents]
+
+    DOCS --> IMPACT[Analyze Domain / Documentation Impact]
+
+    IMPACT --> SELECT[Select Documents to Create or Update]
+
+    SELECT --> WRITE[Execute Domain Document Write Process]
+
+    WRITE --> VERIFY[Verify Document Consistency]
+
+    VERIFY --> CHECK{Documentation Complete?}
+
+    CHECK -- No --> IMPACT
+    CHECK -- Yes --> COMPLETE[Complete]
+
+    COMPLETE --> END([End])
+```
+
+### Responsibilities
+
+- Code Complete Report 조회
+- 기존 Notion Domain Document 조회
+- 변경된 Domain / API / Policy 영향 분석
+- 수정 대상 문서 선택
+- 기존 문서 Update 또는 신규 문서 생성
+- Code 변경 사항과 문서 간 Consistency 확인
+- 결과를 Orchestrator에 반환
+
+---
+
+# End-to-End Workflow
+
+```mermaid
+sequenceDiagram
+    actor User as Slack User
+    participant O as LangGraph Orchestrator
+    participant L as Linear Agent
+    participant C as Code Agent
+    participant N as Notion Agent
+
+    User->>O: 기획서 기반 개발 요청
+
+    O->>L: Planning Context 전달
+    L->>L: Requirement 분석
+    L->>L: Ticket 생성 / 보완
+    L-->>O: Linear Ticket Result
+
+    O->>C: Ticket + Goal 전달
+    C->>C: Repository 분석
+    C->>C: plan.md 작성
+    C->>C: Code Implementation
+    C->>C: Test / Compile / Analytics
+    C-->>O: Complete Report
+
+    O->>N: Complete Report 전달
+    N->>N: Existing Docs 분석
+    N->>N: Domain Docs 업데이트
+    N-->>O: Documentation Result
+
+    O-->>User: 전체 작업 결과 및 상태 전달
+```
+
+---
+
+# Orchestrator
+
+LangGraph 기반 Orchestrator는 Agent 내부 구현보다 **Agent 간 Handoff와 전체 Goal 달성 여부 관리**에 집중합니다.
+
+```mermaid
+flowchart LR
+    INPUT[Task Input] --> ROUTER[Determine Next Agent]
+
+    ROUTER --> LINEAR[Linear Subgraph]
+    ROUTER --> CODE[Code Subgraph]
+    ROUTER --> NOTION[Notion Subgraph]
+
+    LINEAR --> RESULT[Agent Result]
+    CODE --> RESULT
+    NOTION --> RESULT
+
+    RESULT --> GOAL{Goal Complete?}
+
+    GOAL -- No --> ROUTER
+    GOAL -- Yes --> COMPLETE[Complete]
+```
+
+### Orchestrator Responsibilities
+
+- Slack 요청 해석
+- 현재 Goal과 Context 관리
+- 실행할 Agent 선택
+- Agent Input 생성
+- Agent Output 수집
+- Agent 간 Handoff
+- 전체 Goal 완료 여부 판단
+- 진행 상황 Slack 전달
+
+Orchestrator가 Linear, Git, Notion Tool을 직접 세밀하게 조작하기보다는 각 Domain Agent에게 Goal을 위임하는 구조를 지향합니다.
+
+---
+
+# LLM Tool Chain
+
+각 Agent 내부의 Tool Calling은 LangChain 기반 Tool Chain으로 구성합니다.
+
+```mermaid
+flowchart LR
+    LLM[LLM] --> DECIDE[Decide Tool Call]
+
+    DECIDE --> TOOL[Tool]
+
+    TOOL --> RESULT[Tool Result]
+
+    RESULT --> LLM
+
+    LLM --> FINAL[Agent Output]
+```
+
+예를 들어 Code Agent는 다음과 같은 Tool을 사용할 수 있습니다.
 
 ```text
-Settings
-  → get_agent(provider)
-  → ChatOpenAI 또는 ChatAnthropic
-  → LangChainAnalysisAgent
-  → ProjectResolver에 바인딩된 StructuredTool
-       ├─ read_file(project_name, relative_path)
-       ├─ list_files(project_name, relative_path)
-       └─ list_projects()   # 프로젝트가 선택되기 전의 탐색에만 사용
+Code Agent
+ ├─ file search
+ ├─ file read
+ ├─ grep / code search
+ ├─ file write / patch
+ ├─ shell execution
+ ├─ test
+ ├─ build
+ ├─ static analysis
+ └─ git
 ```
 
-일반 분석의 한 반복은 다음처럼 동작합니다.
+Linear Agent:
 
-1. `LangChainAnalysisAgent`가 사용자 요청·스레드 맥락·정책을 포함한 프롬프트를 모델에
-   전달합니다.
-2. 모델은 최종 JSON 또는 LangChain tool call 하나를 반환합니다.
-3. `PolicyGuard` 역할의 검증 코드가 도구명, 선택한 프로젝트, 상대 경로, 반복 여부를
-   확인합니다.
-4. 허용된 `StructuredTool`은 `ProjectResolver`를 통해 로컬 프로젝트 경계를 확인한 뒤
-   읽기 전용으로 실행됩니다.
-5. 도구 결과는 `ToolMessage`로 모델에 전달됩니다. 실제 파일을 읽었다면 그 상대 경로를
-   근거로 기록합니다.
-6. 모델이 근거 없는 최종 답변을 내면 한 번 더 근거 파일 읽기를 요구합니다. 그래도
-   근거가 없으면 추측 답변 대신 파일 지정을 요청합니다.
-7. 최종 JSON은 `AnalysisResult(summary, findings, sources, limitations)`으로 검증되고
-   Slack 스레드 응답으로 렌더링됩니다.
+```text
+Linear Agent
+ ├─ get issue
+ ├─ search issue
+ ├─ create issue
+ ├─ update issue
+ └─ update status
+```
 
-LangChain은 모델의 도구 호출 형식과 메시지 순서를 관리하지만, 접근 제어는 모델에
-맡기지 않습니다. 프로젝트 경계, 한 번의 도구 호출, 중복 호출 차단, 근거 파일 요구는
-애플리케이션 코드가 강제합니다.
+Notion Agent:
 
-### 4. 응답과 운영 로그
+```text
+Notion Agent
+ ├─ search page
+ ├─ read page
+ ├─ create page
+ ├─ update page
+ └─ append content
+```
 
-최종 답변은 요약, 핵심 발견, 실제로 읽은 근거 파일, 분석 한계를 포함합니다. 동일 Slack
-이벤트는 한 번만 처리하며, 각 스레드의 실행 상태를 관리합니다.
+---
 
-로그에는 요청 ID, Slack 채널·스레드 ID, 선택한 실행 계획, 도구 호출의 시작·완료·실패가
-기록됩니다. 파일 본문, API 토큰, LLM의 내부 추론은 로그에 기록하지 않습니다.
+# Agent Contract
 
-```bash
-# 전체 실시간 로그
-tail -f logs/slack-bot.log
+Agent 간 직접 호출은 최소화하고 Orchestrator를 통해 Handoff합니다.
 
-# 도구 호출만 보기
-tail -f logs/slack-bot.log | grep tool_call
+```text
+Linear Agent
+      ↓
+Agent Result
+      ↓
+Orchestrator
+      ↓
+Code Agent
+      ↓
+Agent Result
+      ↓
+Orchestrator
+      ↓
+Notion Agent
+```
+
+공통 Input / Output Contract를 정의하여 Agent 간 결합도를 낮춥니다.
+
+### Input
+
+```json
+{
+  "taskId": "TASK-001",
+  "goal": "Implement shipment delay notification",
+  "context": {},
+  "sourceArtifacts": [],
+  "constraints": []
+}
+```
+
+### Output
+
+```json
+{
+  "taskId": "TASK-001",
+  "agent": "code",
+  "status": "completed",
+  "summary": "...",
+  "artifacts": [],
+  "nextAction": null
+}
+```
+
+---
+
+# Project Structure
+
+예상 프로젝트 구조입니다.
+
+```text
+src/
+├── orchestrator/
+│   ├── graph.py
+│   ├── router.py
+│   └── state.py
+│
+├── agents/
+│   ├── linear/
+│   │   ├── graph.py
+│   │   ├── nodes.py
+│   │   ├── prompts.py
+│   │   └── tools.py
+│   │
+│   ├── code/
+│   │   ├── graph.py
+│   │   ├── nodes.py
+│   │   ├── prompts.py
+│   │   └── tools.py
+│   │
+│   └── notion/
+│       ├── graph.py
+│       ├── nodes.py
+│       ├── prompts.py
+│       └── tools.py
+│
+├── chains/
+│   ├── llm.py
+│   ├── tool_chain.py
+│   └── structured_output.py
+│
+├── integrations/
+│   ├── slack/
+│   ├── linear/
+│   ├── notion/
+│   └── git/
+│
+├── models/
+│   ├── task.py
+│   ├── agent_input.py
+│   └── agent_output.py
+│
+└── main.py
+```
+
+---
+
+# KPI Measurement
+
+핵심 KPI는 **개발 Process Lead Time 감소**입니다.
+
+전체 Lead Time을 다음과 같이 분해하여 측정합니다.
+
+```text
+Total Development Lead Time
+
+= Planning → Ticket Lead Time
++ Ticket → Coding Start Lead Time
++ Coding Lead Time
++ Validation Lead Time
++ Documentation Lead Time
+```
+
+### Metrics
+
+
+| Metric                      | Description                               |
+| --------------------------- | ----------------------------------------- |
+| Planning → Ticket Lead Time | 기획 완료부터 개발 가능한 Linear Ticket 생성까지 소요 시간   |
+| Ticket → Coding Start       | Ticket 생성부터 실제 Code 작업 시작까지 대기 시간         |
+| Coding Lead Time            | 구현 시작부터 구현 완료까지 소요 시간                     |
+| Validation Lead Time        | 구현 후 Test / Build / Analytics 완료까지 소요 시간  |
+| Documentation Lead Time     | 개발 완료 후 Notion 반영까지 소요 시간                 |
+| Manual Handoff Count        | 사람의 수동 전달이 필요한 단계 수                       |
+| Agent Retry Count           | Agent가 Goal 달성을 위해 재수행한 횟수                |
+| Autonomous Completion Rate  | Human Intervention 없이 전체 Workflow를 완료한 비율 |
+
+
+### Primary KPI
+
+```text
+Development Process Lead Time Reduction (%)
+
+= (Baseline Lead Time - Agent Lead Time)
+  / Baseline Lead Time
+  × 100
+```
+
+---
+
+# Initial Scope
+
+초기 버전에서는 다음 Flow를 우선 지원합니다.
+
+```text
+Planning Document
+    ↓
+Linear Ticket Generation
+    ↓
+Code Implementation
+    ↓
+Test / Compile
+    ↓
+Completion Report
+    ↓
+Notion Documentation Update
+```
+
+장기적으로는 다음 영역까지 확장할 수 있습니다.
+
+```text
+Slack Discussion
+    ↓
+Planning
+    ↓
+Linear
+    ↓
+Code
+    ↓
+Code Review
+    ↓
+Pull Request
+    ↓
+CI
+    ↓
+Deploy
+    ↓
+Documentation
+```
+
+---
+
+# Goal
+
+이 프로젝트의 목적은 단순히 Linear, Coding Agent, Notion을 연결하는 것이 아닙니다.
+
+> **기획 → 개발 → 검증 → 문서화 사이의 반복적인 Handoff를 Agent가 대신 수행하여, 개발자가 실제 문제 해결과 기술적 의사결정에 집중할 수 있도록 하는 것**
+
+최종적으로는 Slack을 단일 Interface로 사용하면서 다음과 같은 개발 경험을 목표로 합니다.
+
+```text
+"이 기획서 기준으로 개발 진행해줘."
+
+        ↓
+
+Linear Ticket 생성
+        ↓
+Code 구현
+        ↓
+Test / Build 검증
+        ↓
+Notion 문서 갱신
+        ↓
+
+"작업 완료했습니다."
 ```

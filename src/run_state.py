@@ -15,6 +15,36 @@ class ThreadRunState(StrEnum):
     FAILED = "failed"
 
 
+class CodeWorkState(StrEnum):
+    """Lifecycle of one confirmed-or-pending code-work request."""
+
+    IDLE = "idle"
+    DISCOVERING = "discovering"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    IMPLEMENTING = "implementing"
+    VERIFYING = "verifying"
+    REPAIRING = "repairing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class CodeWorkStateStore:
+    """Keeps code-work state independent for every Slack thread."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._states: dict[tuple[str, str], CodeWorkState] = {}
+
+    def set(self, *, channel_id: str, thread_ts: str, state: CodeWorkState) -> None:
+        with self._lock:
+            self._states[(channel_id, thread_ts)] = state
+
+    def state(self, *, channel_id: str, thread_ts: str) -> CodeWorkState:
+        with self._lock:
+            return self._states.get((channel_id, thread_ts), CodeWorkState.IDLE)
+
+
 class ThreadRunStore:
     """Tracks event IDs once while keeping the latest state for each Slack thread."""
 

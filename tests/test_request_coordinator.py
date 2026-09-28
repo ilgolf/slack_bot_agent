@@ -71,7 +71,7 @@ def test_execute_confirmation_consumes_pending_code_plan(tmp_path: Path) -> None
     )
 
     assert "코드 실행 계획" in preview
-    assert "실행 및 검증 완료" in result
+    assert "구현 및 검증 완료" in result
     assert readme.read_text() == "after\n"
 
 
