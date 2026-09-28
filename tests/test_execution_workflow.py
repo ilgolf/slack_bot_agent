@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from src.agent import AnalysisResult
 from src.execution_workflow import (
     CommandResult,
     ExecutionPlan,
@@ -22,9 +23,12 @@ from src.execution_workflow import (
     ProjectContextLoader,
     ProjectExecutionTools,
     SkillRegistry,
+    VerificationStatus,
+    render_code_work_status,
     render_execution_result,
 )
 from src.project_resolver import ProjectResolver
+from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
 
 
@@ -48,6 +52,114 @@ class PlanningAgent:
         return self.plan
 
 
+class InvestigatingPlanningAgent(PlanningAgent):
+    def __init__(self, plan: ExecutionPlan, sources: list[str]) -> None:
+        super().__init__(plan)
+        self.sources = sources
+        self.questions: list[str] = []
+
+    def analyze(
+        self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
+    ) -> AnalysisResult:
+        del channel_id, thread_ts
+        self.questions.append(question)
+        return AnalysisResult(summary="조사 완료", findings=[], sources=self.sources)
+
+
+class StateAwarePlanningAgent(PlanningAgent):
+    def __init__(self, plan: ExecutionPlan, state_store: CodeWorkStateStore) -> None:
+        super().__init__(plan)
+        self.state_store = state_store
+
+    def create_execution_plan(
+        self,
+        request: str,
+        context: object,
+        skills: object,
+        existing_files: list[ExistingFile],
+    ) -> ExecutionPlan:
+        assert self.state_store.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.DISCOVERING
+        return super().create_execution_plan(request, context, skills, existing_files)
+
+
+class RepairingPlanningAgent(PlanningAgent):
+    def __init__(self, plan: ExecutionPlan) -> None:
+        super().__init__(plan)
+        self.repair_calls = 0
+
+    def create_repair_steps(
+        self,
+        plan: ExecutionPlan,
+        existing_files: list[ExistingFile],
+        checks: list[CommandResult],
+    ) -> list[ExecutionStep]:
+        self.repair_calls += 1
+        assert plan.affected_files == ["README.md"]
+        assert existing_files == [ExistingFile("README.md", "broken\n")]
+        assert checks == [CommandResult("run_tests", False, "test failed")]
+        return [ExecutionStep(action="write_file", path="README.md", content="fixed\n")]
+
+
+class RepeatedlyFailingRepairAgent(PlanningAgent):
+    def __init__(self, plan: ExecutionPlan) -> None:
+        super().__init__(plan)
+        self.repair_calls = 0
+
+    def create_repair_steps(
+        self,
+        plan: ExecutionPlan,
+        existing_files: list[ExistingFile],
+        checks: list[CommandResult],
+    ) -> list[ExecutionStep]:
+        del plan, existing_files, checks
+        self.repair_calls += 1
+        return [
+            ExecutionStep(
+                action="write_file",
+                path="README.md",
+                content=f"still broken {self.repair_calls}\n",
+            )
+        ]
+
+
+class SameDiffRepairAgent(PlanningAgent):
+    def __init__(self, plan: ExecutionPlan) -> None:
+        super().__init__(plan)
+        self.repair_calls = 0
+
+    def create_repair_steps(
+        self,
+        plan: ExecutionPlan,
+        existing_files: list[ExistingFile],
+        checks: list[CommandResult],
+    ) -> list[ExecutionStep]:
+        del plan, existing_files, checks
+        self.repair_calls += 1
+        return [ExecutionStep(action="write_file", path="README.md", content="same repair\n")]
+
+
+class ProtectedFileRepairAgent(PlanningAgent):
+    def create_repair_steps(
+        self,
+        plan: ExecutionPlan,
+        existing_files: list[ExistingFile],
+        checks: list[CommandResult],
+    ) -> list[ExecutionStep]:
+        del plan, existing_files, checks
+        return [ExecutionStep(action="write_file", path="plan.md", content="# repair\n")]
+
+
+class InvalidRepairAgent(PlanningAgent):
+    def create_repair_steps(
+        self,
+        plan: ExecutionPlan,
+        existing_files: list[ExistingFile],
+        checks: list[CommandResult],
+    ) -> list[ExecutionStep]:
+        del plan, existing_files, checks
+        raise RuntimeError("invalid model response")
+
+
 def _plan(*, content: str = "after\n", checks: list[str] | None = None) -> ExecutionPlan:
     return ExecutionPlan(
         goal="README를 갱신합니다",
@@ -57,6 +169,24 @@ def _plan(*, content: str = "after\n", checks: list[str] | None = None) -> Execu
         verification_commands=checks or [],
         risk=ExecutionRisk.MODIFY,
     )
+
+
+def test_code_work_status_messages_are_deterministic_and_content_safe() -> None:
+    assert render_code_work_status(CodeWorkState.DISCOVERING) == "🔎 코드 구조를 확인 중입니다…"
+    assert render_code_work_status(CodeWorkState.AWAITING_CONFIRMATION) == (
+        "📝 구현 계획을 만들었습니다. 실행 확인을 기다립니다."
+    )
+    assert render_code_work_status(CodeWorkState.IMPLEMENTING) == (
+        "🛠️ 코드 변경을 적용했습니다. 검증 중입니다…"
+    )
+    assert render_code_work_status(CodeWorkState.VERIFYING) == (
+        "🛠️ 코드 변경을 적용했습니다. 검증 중입니다…"
+    )
+    assert render_code_work_status(CodeWorkState.REPAIRING, repair_attempt=2) == (
+        "🔁 테스트 실패를 분석해 수정 중입니다… (2/2)"
+    )
+    assert render_code_work_status(CodeWorkState.SUCCEEDED) == "✅ 구현 및 검증 완료"
+    assert render_code_work_status(CodeWorkState.FAILED) == "❌ 구현 실패"
 
 
 def _workflow(tmp_path: Path, *, plan_store: PendingPlanStore | None = None) -> ExecutionWorkflow:
@@ -83,6 +213,521 @@ def test_workflow_reads_target_file_content_before_creating_plan(tmp_path: Path)
     assert agent.received_existing_files is not None
     contents = {item.relative_path: item.content for item in agent.received_existing_files}
     assert contents == {"README.md": "before\n"}
+
+
+def test_workflow_transitions_from_discovery_to_awaiting_confirmation(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    state_store = CodeWorkStateStore()
+    workflow = ExecutionWorkflow(
+        project_resolver=ProjectResolver(root=tmp_path),
+        code_work_state_store=state_store,
+    )
+    agent = StateAwarePlanningAgent(_plan(), state_store)
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert response is not None
+    assert state_store.state(channel_id="C1", thread_ts="1.1") is (
+        CodeWorkState.AWAITING_CONFIRMATION
+    )
+
+
+def test_execution_transitions_from_implementing_to_succeeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    state_store = CodeWorkStateStore()
+    workflow = ExecutionWorkflow(
+        project_resolver=ProjectResolver(root=tmp_path),
+        code_work_state_store=state_store,
+    )
+    original_write_file = ProjectExecutionTools.write_file
+
+    def write_file_while_implementing(
+        tools: ProjectExecutionTools, relative_path: str, content: str
+    ) -> tuple[str, str]:
+        assert state_store.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.IMPLEMENTING
+        return original_write_file(tools, relative_path, content)
+
+    monkeypatch.setattr(ProjectExecutionTools, "write_file", write_file_while_implementing)
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = PlanningAgent(_plan())
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert response is not None
+    assert state_store.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.SUCCEEDED
+
+
+def test_execution_transitions_to_verifying_before_running_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    state_store = CodeWorkStateStore()
+    workflow = ExecutionWorkflow(
+        project_resolver=ProjectResolver(root=tmp_path),
+        code_work_state_store=state_store,
+    )
+
+    def run_check_while_verifying(tools: ProjectExecutionTools, name: str) -> CommandResult:
+        assert state_store.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.VERIFYING
+        return CommandResult(name=name, success=True, output="")
+
+    monkeypatch.setattr(ProjectExecutionTools, "run_check", run_check_while_verifying)
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = PlanningAgent(_plan(checks=["run_tests"]))
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert state_store.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.SUCCEEDED
+
+
+def test_execution_records_failed_state_when_verification_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    state_store = CodeWorkStateStore()
+    workflow = ExecutionWorkflow(
+        project_resolver=ProjectResolver(root=tmp_path),
+        code_work_state_store=state_store,
+    )
+    monkeypatch.setattr(
+        ProjectExecutionTools,
+        "run_check",
+        lambda _tools, name: CommandResult(name=name, success=False, output="failed"),
+    )
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = PlanningAgent(_plan(checks=["run_tests"]))
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert response is not None
+    assert "검증 실패" in response
+    assert state_store.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.FAILED
+
+
+def test_command_result_derives_a_structured_verification_status() -> None:
+    assert CommandResult("run_tests", True, "").status is VerificationStatus.SUCCEEDED
+    assert CommandResult("run_tests", False, "failed").status is VerificationStatus.FAILED
+
+
+def test_execution_records_failed_state_when_writing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    state_store = CodeWorkStateStore()
+    workflow = ExecutionWorkflow(
+        project_resolver=ProjectResolver(root=tmp_path),
+        code_work_state_store=state_store,
+    )
+    monkeypatch.setattr(
+        ProjectExecutionTools,
+        "write_file",
+        lambda _tools, _path, _content: (_ for _ in ()).throw(OSError("disk unavailable")),
+    )
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = PlanningAgent(_plan())
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert state_store.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.FAILED
+
+
+def test_execution_repairs_a_failed_check_once_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    readme = project / "README.md"
+    readme.write_text("before\n")
+    checks = iter(
+        [
+            CommandResult("run_tests", False, "test failed"),
+            CommandResult("run_tests", True, ""),
+        ]
+    )
+    monkeypatch.setattr(ProjectExecutionTools, "run_check", lambda _tools, _name: next(checks))
+    agent = RepairingPlanningAgent(_plan(content="broken\n", checks=["run_tests"]))
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert response is not None
+    assert "✅ 구현 완료 (자동 복구 1회)" in response
+    assert agent.repair_calls == 1
+    assert readme.read_text() == "fixed\n"
+
+
+def test_execution_stops_after_the_configured_repair_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    checks = iter(["failure one", "failure two", "failure three"])
+    monkeypatch.setattr(
+        ProjectExecutionTools,
+        "run_check",
+        lambda _tools, name: CommandResult(name, False, next(checks)),
+    )
+    agent = RepeatedlyFailingRepairAgent(_plan(checks=["run_tests"]))
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert response is not None
+    assert "❌ 구현 실패: 자동 복구 한도 초과" in response
+    assert agent.repair_calls == 2
+
+
+def test_execution_stops_when_the_same_verification_failure_repeats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    monkeypatch.setattr(
+        ProjectExecutionTools,
+        "run_check",
+        lambda _tools, name: CommandResult(name, False, f"failure {name}"),
+    )
+    agent = RepeatedlyFailingRepairAgent(_plan(checks=["run_tests"]))
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert response is not None
+    assert "동일한 검증 실패가 반복되었습니다" in response
+    assert agent.repair_calls == 1
+
+
+def test_execution_stops_when_the_same_repair_diff_repeats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    failures = iter(["failure one", "failure two"])
+    monkeypatch.setattr(
+        ProjectExecutionTools,
+        "run_check",
+        lambda _tools, name: CommandResult(name, False, next(failures)),
+    )
+    agent = SameDiffRepairAgent(_plan(checks=["run_tests"]))
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert response is not None
+    assert "동일한 자동 복구 diff가 반복되었습니다" in response
+    assert agent.repair_calls == 2
+
+
+def test_execution_returns_safe_failure_when_repair_planner_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    monkeypatch.setattr(
+        ProjectExecutionTools,
+        "run_check",
+        lambda _tools, name: CommandResult(name, False, "test failed"),
+    )
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = InvalidRepairAgent(_plan(checks=["run_tests"]))
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert response is not None
+    assert "자동 복구 계획을 해석하지 못했습니다" in response
+
+
+def test_repair_requires_new_confirmation_before_editing_a_protected_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    protected = project / "plan.md"
+    protected.write_text("# before\n")
+    monkeypatch.setattr(
+        ProjectExecutionTools,
+        "run_check",
+        lambda _tools, name: CommandResult(name, False, "failure"),
+    )
+    plan = ExecutionPlan(
+        goal="plan 갱신",
+        project_name="my-project",
+        affected_files=["plan.md"],
+        steps=[ExecutionStep(action="write_file", path="plan.md", content="# confirmed\n")],
+        verification_commands=["run_tests"],
+        risk=ExecutionRisk.MODIFY,
+    )
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = ProtectedFileRepairAgent(plan)
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert response is not None
+    assert "보호 파일은 자동 복구할 수 없어 새 계획과 확인이 필요합니다" in response
+    assert protected.read_text() == "# confirmed\n"
+
+
+def test_pending_plans_and_confirmation_are_isolated_per_slack_thread(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    first = project / "a.txt"
+    second = project / "b.txt"
+    first.write_text("a-before\n")
+    second.write_text("b-before\n")
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    first_plan = ExecutionPlan(
+        "a 수정", "my-project", ["a.txt"],
+        [ExecutionStep("write_file", "a.txt", "a-after\n")], [], ExecutionRisk.MODIFY
+    )
+    second_plan = ExecutionPlan(
+        "b 수정", "my-project", ["b.txt"],
+        [ExecutionStep("write_file", "b.txt", "b-after\n")], [], ExecutionRisk.MODIFY
+    )
+    workflow.process(
+        channel_id="C1", thread_ts="T1", text="my-project a.txt 수정해줘",
+        thread_context=context, agent=PlanningAgent(first_plan)
+    )
+    workflow.process(
+        channel_id="C1", thread_ts="T2", text="my-project b.txt 수정해줘",
+        thread_context=context, agent=PlanningAgent(second_plan)
+    )
+
+    workflow.process(
+        channel_id="C1", thread_ts="T1", text="실행", thread_context=context,
+        agent=PlanningAgent(first_plan)
+    )
+
+    assert first.read_text() == "a-after\n"
+    assert second.read_text() == "b-before\n"
+    assert not workflow.has_pending("C1", "T1")
+    assert workflow.has_pending("C1", "T2")
+
+
+def test_workflow_grounds_a_general_code_plan_in_agent_read_sources(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    source = project / "src" / "auth.py"
+    source.parent.mkdir()
+    source.write_text("def authenticate() -> bool:\n    return True\n")
+    plan = ExecutionPlan(
+        goal="인증 반환값 수정",
+        project_name="my-project",
+        affected_files=["src/auth.py"],
+        steps=[
+            ExecutionStep(
+                action="write_file",
+                path="src/auth.py",
+                content="def authenticate() -> bool:\n    return False\n",
+            )
+        ],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+    agent = InvestigatingPlanningAgent(plan, sources=["src/auth.py"])
+
+    workflow = _workflow(tmp_path)
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project 인증 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert agent.questions == ["my-project 인증 수정해줘"]
+    assert agent.received_existing_files == [
+        ExistingFile(relative_path="src/auth.py", content=source.read_text())
+    ]
+
+
+def test_explicit_file_plan_does_not_require_exploration_sources(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# existing plan\n")
+    plan = ExecutionPlan(
+        goal="Update the plan",
+        project_name="my-project",
+        affected_files=["plan.md"],
+        steps=[ExecutionStep(action="write_file", path="plan.md", content="# updated plan\n")],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+    agent = InvestigatingPlanningAgent(plan, sources=[])
+
+    result = _workflow(tmp_path).process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md에 Linear 연동 작업 계획을 작성해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "코드 실행 계획" in result
+    assert agent.questions == []
+    assert agent.received_existing_files == [
+        ExistingFile(relative_path="plan.md", content="# existing plan\n")
+    ]
 
 
 def test_workflow_extracts_target_path_from_thread_context_not_just_current_message(
@@ -453,6 +1098,74 @@ def test_workflow_allows_project_control_file_edit_when_user_names_it(tmp_path: 
     assert "코드 실행 계획" in result
 
 
+def test_plan_follow_request_does_not_authorize_plan_file_overwrite(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# implementation specification\n")
+    agent = PlanningAgent(
+        ExecutionPlan(
+            goal="Rewrite plan.md",
+            project_name="my-project",
+            affected_files=["plan.md"],
+            steps=[ExecutionStep(action="write_file", path="plan.md", content="# rewritten\n")],
+            verification_commands=[],
+            risk=ExecutionRisk.MODIFY,
+        )
+    )
+
+    workflow = _workflow(tmp_path)
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md에 적은대로 개발 진행해볼래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "프로젝트 관리 파일" in result
+    assert not workflow.has_pending("C1", "1.1")
+    assert (project / "plan.md").read_text() == "# implementation specification\n"
+
+
+def test_plan_follow_request_rejects_new_root_level_module(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    source = project / "src" / "linear_tools.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("class LinearTools: pass\n")
+    (project / "plan.md").write_text("# Linear implementation\n")
+    agent = InvestigatingPlanningAgent(
+        ExecutionPlan(
+            goal="Add Linear API",
+            project_name="my-project",
+            affected_files=["linear_integration.py"],
+            steps=[
+                ExecutionStep(
+                    action="write_file",
+                    path="linear_integration.py",
+                    content="class LinearAPI: pass\n",
+                )
+            ],
+            verification_commands=[],
+            risk=ExecutionRisk.MODIFY,
+        ),
+        sources=["src/linear_tools.py"],
+    )
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md에 적은대로 Linear 개발 진행해볼래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "src/` 또는 `tests/" in result
+    assert not workflow.has_pending("C1", "1.1")
+
+
 def test_context_loader_collects_nested_agents_and_git_state(tmp_path: Path) -> None:
     project = tmp_path / "my-project"
     target = project / "src" / "feature"
@@ -573,6 +1286,27 @@ def test_workflow_previews_plan_then_writes_only_after_execute(tmp_path: Path) -
     assert readme.read_text() == "after\n"
 
 
+def test_plan_preview_includes_confirmed_scope_and_repair_budget(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    preview = _workflow(tmp_path).process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=PlanningAgent(_plan(checks=["run_tests", "run_lint"])),
+    )
+
+    assert preview is not None
+    assert "승인 파일 범위:\n- `README.md`" in preview
+    assert "변경 미리보기:" in preview
+    assert "고정 검증 명령: run_tests, run_lint" in preview
+    assert "자동 복구 예산: 최대 2회" in preview
+    assert "미지원 작업: 임의 셸·HTTP·패키지 설치/삭제·rename·Git commit/push" in preview
+    assert "남은 위험:" in preview
+
+
 def test_execution_end_to_end_reports_failed_verification_not_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -605,7 +1339,7 @@ def test_execution_end_to_end_reports_failed_verification_not_success(
 
     assert result is not None
     assert "✅" not in result
-    assert "⚠️ 실행 완료, 검증 실패" in result
+    assert "⚠️ 변경 적용, 검증 실패" in result
     assert (project / "README.md").read_text() == "after\n"
 
 
@@ -700,6 +1434,44 @@ def test_execution_applies_each_write_step_and_writes_both_files(tmp_path: Path)
     assert (project / "b.txt").read_text() == "b-after\n"
     assert "`a.txt`" in result
     assert "`b.txt`" in result
+
+
+def test_workflow_requires_a_new_confirmation_for_a_plan_outside_approved_scope(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    readme = project / "README.md"
+    other = project / "other.md"
+    readme.write_text("before\n")
+    other.write_text("other-before\n")
+    out_of_scope_plan = ExecutionPlan(
+        goal="두 파일 수정",
+        project_name="my-project",
+        affected_files=["README.md"],
+        steps=[
+            ExecutionStep(action="write_file", path="README.md", content="after\n"),
+            ExecutionStep(action="write_file", path="other.md", content="other-after\n"),
+        ],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+    workflow = _workflow(tmp_path)
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=PlanningAgent(out_of_scope_plan),
+    )
+
+    assert response is not None
+    assert "승인 파일 범위 밖 수정" in response
+    assert "새 계획과 실행 확인이 필요" in response
+    assert not workflow.has_pending("C1", "1.1")
+    assert readme.read_text() == "before\n"
+    assert other.read_text() == "other-before\n"
 
 
 def test_execution_reports_already_applied_files_when_a_later_step_fails(
@@ -888,7 +1660,47 @@ def test_execution_report_marks_failed_check_and_redacts_secret() -> None:
         ),
     )
 
-    assert "⚠️ 실행 완료, 검증 실패" in response
+    assert "⚠️ 변경 적용, 검증 실패" in response
     assert "API_TOKEN=[REDACTED]" in response
     assert "do-not-show" not in response
     assert "Diff 요약: +1/-1줄" in response
+
+
+def test_execution_reports_missing_verification_runner_after_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing local runner must produce a Slack-safe final state, rather
+    than escaping the listener after the approved file write has happened."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    readme = project / "README.md"
+    readme.write_text("before\n")
+    plan = _plan(checks=["run_tests"])
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    monkeypatch.setitem(
+        ProjectExecutionTools.COMMANDS,
+        "run_tests",
+        ("missing-verification-runner",),
+    )
+
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=context,
+        agent=PlanningAgent(plan),
+    )
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="실행",
+        thread_context=context,
+        agent=PlanningAgent(plan),
+    )
+
+    assert result is not None
+    assert "⚠️ 변경 적용, 검증 실패" in result
+    assert "실행 환경 오류" in result
+    assert "검증 도구를 시작할 수 없습니다 (FileNotFoundError)." in result
+    assert readme.read_text() == "after\n"

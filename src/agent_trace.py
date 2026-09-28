@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import Lock
 from time import monotonic
 
@@ -32,6 +32,8 @@ class TraceStep:
     input_size: int = 0
     result_size: int = 0
     evidence_refs: tuple[str, ...] = ()
+    repair_attempts: int = 0
+    termination_reason: str | None = None
 
 
 @dataclass
@@ -94,7 +96,28 @@ class AgentTraceRecorder:
         return "\n".join(
             f"- {step.tool_name}: {step.outcome} "
             f"({step.duration_ms}ms, 근거 {len(step.evidence_refs)}개)"
+            + (
+                f", 복구 {step.repair_attempts}회, 종료: {step.termination_reason}"
+                if step.termination_reason is not None
+                else ""
+            )
             for step in self.steps
+        )
+
+    def record_code_work(self, *, repair_attempts: int, termination_reason: str) -> None:
+        """Append only lifecycle metadata for a confirmed code-work run."""
+        self.record_tool(
+            phase="execution",
+            tool_name="code_work",
+            category="project_write",
+            outcome="completed" if termination_reason == "verified" else "failed",
+            args={"repair_attempts": repair_attempts, "termination_reason": termination_reason},
+            result="",
+        )
+        self.steps[-1] = replace(
+            self.steps[-1],
+            repair_attempts=repair_attempts,
+            termination_reason=termination_reason,
         )
 
 

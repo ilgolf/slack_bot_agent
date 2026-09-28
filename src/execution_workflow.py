@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -24,6 +25,7 @@ from typing import Literal, Protocol
 
 from src.project_resolver import InvalidProjectName, ProjectResolver, UnknownProject
 from src.request_classifier import classify_request
+from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
 from src.tool_policy import ToolCategory
 from src.tool_registry import ToolRegistry, definition
@@ -33,7 +35,11 @@ logger = logging.getLogger(__name__)
 _SLACK_MENTION = re.compile(r"<@[^>]+>")
 _CONFIRMATION = re.compile(r"^(실행|실행해줘|실행합니다)$")
 _CANCELLATION = re.compile(r"^(취소|취소해줘|취소합니다)$")
-_PATH_IN_REQUEST = re.compile(r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?!\S)")
+# Accept a Korean postposition directly after a filename (``plan.md에``)
+# while returning only the project-relative path.
+_PATH_IN_REQUEST = re.compile(
+    r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?=$|[\s,.:!?…]|[은는이가을를에의])"
+)
 _EXECUTION_MARKERS = (
     "수정",
     "변경",
@@ -59,6 +65,9 @@ _EXECUTION_MARKERS = (
     "작업 plan",
     "작업 계획",
     "구현 계획",
+    "plan.md에 적은대로",
+    "plan.md에 적은 대로",
+    "개발 진행",
     "계획 짜",
     "plan 짜",
     "plan 만들어",
@@ -70,6 +79,7 @@ _EXECUTION_MARKERS = (
 )
 _ALLOWED_VERIFICATIONS = ("run_tests", "run_lint", "run_typecheck")
 _MAX_WRITE_BYTES = 1_000_000
+DEFAULT_MAX_AUTO_REPAIRS = 2
 _GREP_IGNORED_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__"})
 
 
@@ -269,10 +279,26 @@ class ExecutionPlanCreator(Protocol):
     ) -> ExecutionPlan: ...
 
 
+class RepairPlanCreator(Protocol):
+    def create_repair_steps(
+        self,
+        plan: ExecutionPlan,
+        existing_files: list[ExistingFile],
+        checks: list[CommandResult],
+    ) -> list[ExecutionStep]: ...
+
+
 class PendingPlanStatus(StrEnum):
     MISSING = "missing"
     READY = "ready"
     EXPIRED = "expired"
+
+
+class VerificationStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    ENVIRONMENT_ERROR = "environment_error"
 
 
 @dataclass(frozen=True)
@@ -384,6 +410,15 @@ class CommandResult:
     name: str
     success: bool
     output: str
+    status: VerificationStatus | None = None
+
+    def __post_init__(self) -> None:
+        if self.status is None:
+            object.__setattr__(
+                self,
+                "status",
+                VerificationStatus.SUCCEEDED if self.success else VerificationStatus.FAILED,
+            )
 
 
 @dataclass(frozen=True)
@@ -392,20 +427,27 @@ class ExecutionResult:
     diffs: list[str]
     checks: list[CommandResult]
     remaining_risks: list[str]
+    repair_attempts: int = 0
+    repair_failure_reason: str | None = None
 
 
 class ProjectExecutionTools:
     """Restricted filesystem and verification tools used after confirmation only."""
 
     COMMANDS = {
-        "run_tests": ("uv", "run", "pytest"),
-        "run_lint": ("uv", "run", "ruff", "check", "src", "tests"),
-        "run_typecheck": ("uv", "run", "mypy"),
+        # Use the interpreter running the bot so verification is bound to its
+        # virtual environment and does not depend on a separately installed
+        # ``uv`` binary being present on PATH.
+        "run_tests": (sys.executable, "-m", "pytest"),
+        "run_lint": (sys.executable, "-m", "ruff", "check", "src", "tests"),
+        "run_typecheck": (sys.executable, "-m", "mypy"),
     }
 
     def __init__(self, root: Path, allowed_paths: list[str]) -> None:
         self.root = root.resolve()
-        self.allowed_paths = set(allowed_paths)
+        # Freeze the confirmed plan's scope. Callers can neither expand it by
+        # mutating their original list nor accidentally widen it mid-run.
+        self.allowed_paths = frozenset(allowed_paths)
 
     def read_file(self, relative_path: str) -> str:
         return _project_path(self.root, relative_path).read_text(encoding="utf-8")
@@ -485,7 +527,13 @@ class ProjectExecutionTools:
             check=False,
         )
         output = (completed.stdout + completed.stderr).strip()
-        return CommandResult(name=name, success=completed.returncode == 0, output=output[-2000:])
+        success = completed.returncode == 0
+        return CommandResult(
+            name=name,
+            success=success,
+            output=output[-2000:],
+            status=VerificationStatus.SUCCEEDED if success else VerificationStatus.FAILED,
+        )
 
     def tool_registry(self) -> ToolRegistry:
         """Expose the same bounded primitives to a future iterative planner.
@@ -541,12 +589,14 @@ class ExecutionWorkflow:
         skill_registry: SkillRegistry | None = None,
         plan_store: PendingPlanStore | None = None,
         awaiting_project_store: AwaitingProjectStore | None = None,
+        code_work_state_store: CodeWorkStateStore | None = None,
     ) -> None:
         self.project_resolver = project_resolver
         self.context_loader = context_loader or ProjectContextLoader(project_resolver)
         self.skill_registry = skill_registry or SkillRegistry()
         self.plan_store = plan_store or PendingPlanStore()
         self.awaiting_project_store = awaiting_project_store or AwaitingProjectStore()
+        self.code_work_state_store = code_work_state_store or CodeWorkStateStore()
 
     def process(
         self,
@@ -560,7 +610,7 @@ class ExecutionWorkflow:
     ) -> str | None:
         command_text = _SLACK_MENTION.sub("", text).strip()
         if _CONFIRMATION.fullmatch(command_text):
-            response = self._execute_pending(channel_id, thread_ts)
+            response = self._execute_pending(channel_id, thread_ts, agent)
             if defer_missing_confirmation and response.startswith("실행할 보류 계획이 없습니다"):
                 return None
             return response
@@ -598,13 +648,51 @@ class ExecutionWorkflow:
         creator = getattr(agent, "create_execution_plan", None)
         if not callable(creator):
             return "코드 실행 계획에는 LLM 코드 에이전트가 필요합니다."
+        self.code_work_state_store.set(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            state=CodeWorkState.DISCOVERING,
+        )
 
         # A file named in this exact message always wins — it's what the user
         # just said, e.g. redirecting a pending plan to a different file. Only
         # fall back to thread context when this message names nothing at all.
-        target_paths = _PATH_IN_REQUEST.findall(command_text) or _PATH_IN_REQUEST.findall(
-            contextual_text
-        )
+        explicit_target_paths = _PATH_IN_REQUEST.findall(command_text)
+        target_paths = explicit_target_paths or _PATH_IN_REQUEST.findall(contextual_text)
+        plan_follow_request = _is_plan_follow_request(command_text)
+        # "Follow plan.md" names the file as a read-only specification, not
+        # as a requested write target.  Keep it in planning context, but do
+        # not let that wording authorize the model to overwrite it.
+        user_writable_paths = explicit_target_paths
+        if plan_follow_request:
+            user_writable_paths = [
+                path for path in explicit_target_paths if not _is_protected_meta_path(path)
+            ]
+        investigator = getattr(agent, "analyze", None)
+        # An explicitly named file is already a bounded, first-party source
+        # for the planner. Do not make a plan-file creation/edit request fail
+        # merely because the optional exploratory LLM chose not to read it.
+        source_paths: list[str] = []
+        # A directly named file normally supplies bounded planning context.
+        # Following an existing plan is different: the plan is specification,
+        # not implementation evidence, so related source and test files must
+        # still be investigated before the model can propose a code change.
+        if callable(investigator) and (not explicit_target_paths or plan_follow_request):
+            investigation = investigator(
+                contextual_text, channel_id=channel_id, thread_ts=thread_ts
+            )
+            source_paths = [
+                source
+                for source in getattr(investigation, "sources", [])
+                if isinstance(source, str)
+            ]
+            if not source_paths:
+                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+                return "코드 조사 근거 파일을 읽지 못해 실행 계획을 만들 수 없습니다."
+            # Preserve an explicitly named target first, then add only actual
+            # files the investigator read. `_read_existing_files` and the
+            # context loader validate each path against the project boundary.
+            target_paths = list(dict.fromkeys([*target_paths, *source_paths]))
         try:
             context = self.context_loader.load(project_name, target_paths=target_paths)
             skills = self.skill_registry.select(intent=command_text, project_root=context.root)
@@ -621,17 +709,28 @@ class ExecutionWorkflow:
                         project_name, target_paths=plan.affected_files
                     )
                     plan = creator(contextual_text, context, skills, existing_files)
-            _validate_plan(plan, project_name, target_paths)
+            _validate_plan(
+                plan,
+                project_name,
+                user_writable_paths,
+                project_root=context.root,
+                evidence_paths=source_paths,
+                require_code_evidence=plan_follow_request,
+                restrict_new_files_to_code_roots=plan_follow_request,
+            )
             detailed_context = self.context_loader.load(
                 project_name, target_paths=plan.affected_files
             )
         except (InvalidProjectName, UnknownProject):
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return "대상 프로젝트를 찾을 수 없습니다."
         except (OSError, ValueError) as exc:
             logger.warning("execution_plan_rejected project=%s reason=%s", project_name, exc)
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return f"실행 계획을 만들지 못했습니다: {exc}"
         except Exception as exc:
             logger.exception("execution_plan_failed project=%s", project_name)
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return f"실행 계획 생성에 실패했습니다: {exc}"
 
         plan = replace(
@@ -642,6 +741,11 @@ class ExecutionWorkflow:
             applied_skills=[f"{skill.name}@{skill.version}" for skill in skills],
         )
         self.plan_store.put(channel_id, thread_ts, plan, request=command_text)
+        self.code_work_state_store.set(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            state=CodeWorkState.AWAITING_CONFIRMATION,
+        )
         logger.info(
             "execution_plan_ready project=%s files=%s checks=%s risk=%s skills=%s",
             project_name,
@@ -692,20 +796,24 @@ class ExecutionWorkflow:
     def _cancel_pending(self, channel_id: str, thread_ts: str) -> str | None:
         status = self.plan_store.cancel(channel_id, thread_ts)
         if status is PendingPlanStatus.READY:
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.CANCELLED)
             logger.info("execution_plan_cancelled channel=%s thread=%s", channel_id, thread_ts)
             return "보류된 실행 계획을 취소했습니다. 파일은 변경하지 않았습니다."
         if status is PendingPlanStatus.EXPIRED:
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return "보류된 실행 계획이 만료되었습니다. 파일은 변경하지 않았습니다."
         return None
 
-    def _execute_pending(self, channel_id: str, thread_ts: str) -> str:
+    def _execute_pending(self, channel_id: str, thread_ts: str, agent: object) -> str:
         status, pending = self.plan_store.take(channel_id, thread_ts)
         if status is PendingPlanStatus.EXPIRED:
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return "보류된 실행 계획이 만료되었습니다. 새로 계획을 만들어 주세요."
         if status is PendingPlanStatus.MISSING or pending is None:
             return "실행할 보류 계획이 없습니다. 먼저 코드 작업 요청을 보내 주세요."
 
         plan = pending.plan
+        self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IMPLEMENTING)
         changed_files: list[str] = []
         diffs: list[str] = []
         try:
@@ -722,32 +830,68 @@ class ExecutionWorkflow:
                 exc,
                 changed_files,
             )
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return render_execution_failure(plan, str(exc), changed_files)
 
-        # A verification timeout is a failed check, not a run-ending error: the
-        # writes above already succeeded and stay reported, but no further
-        # verification command is attempted once one times out.
-        checks: list[CommandResult] = []
-        for name in plan.verification_commands:
-            try:
-                checks.append(tools.run_check(name))
-            except subprocess.TimeoutExpired:
-                checks.append(CommandResult(name=name, success=False, output="검증 시간 초과"))
+        checks = self._run_verifications(channel_id, thread_ts, plan, tools, changed_files)
+        repair_attempts = 0
+        repair_failure_reason: str | None = None
+        repairer = getattr(agent, "create_repair_steps", None)
+        failure_fingerprints = {_verification_fingerprint(checks)}
+        repair_fingerprints: set[str] = set()
+        while not all(check.success for check in checks) and callable(repairer):
+            if repair_attempts >= DEFAULT_MAX_AUTO_REPAIRS:
+                repair_failure_reason = "자동 복구 한도 초과"
                 break
-            except ValueError as exc:
-                logger.warning(
-                    "execution_failed project=%s reason=%s applied=%s",
-                    plan.project_name,
-                    exc,
-                    changed_files,
+            repair_attempts += 1
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.REPAIRING)
+            try:
+                repair_steps = repairer(
+                    plan,
+                    _read_existing_files(context.root, plan.affected_files),
+                    checks,
                 )
-                return render_execution_failure(plan, str(exc), changed_files)
+                _validate_repair_steps(repair_steps, plan.affected_files)
+                repair_fingerprint = _repair_fingerprint(repair_steps)
+                if repair_fingerprint in repair_fingerprints:
+                    repair_failure_reason = "동일한 자동 복구 diff가 반복되었습니다"
+                    break
+                repair_fingerprints.add(repair_fingerprint)
+                for step in repair_steps:
+                    changed_file, diff = tools.write_file(step.path, step.content)
+                    changed_files.append(changed_file)
+                    diffs.append(diff)
+            except (OSError, ValueError) as exc:
+                logger.warning("repair_failed project=%s reason=%s", plan.project_name, exc)
+                repair_failure_reason = str(exc)
+                break
+            except Exception as exc:
+                # A malformed LLM repair response must end this one confirmed
+                # run safely; it must never escape the Slack listener.
+                logger.warning(
+                    "repair_plan_invalid project=%s category=%s",
+                    plan.project_name,
+                    type(exc).__name__,
+                )
+                repair_failure_reason = "자동 복구 계획을 해석하지 못했습니다"
+                break
+            checks = self._run_verifications(channel_id, thread_ts, plan, tools, changed_files)
+            failure_fingerprint = _verification_fingerprint(checks)
+            if (
+                not all(check.success for check in checks)
+                and failure_fingerprint in failure_fingerprints
+            ):
+                repair_failure_reason = "동일한 검증 실패가 반복되었습니다"
+                break
+            failure_fingerprints.add(failure_fingerprint)
 
         result = ExecutionResult(
             changed_files=changed_files,
             diffs=diffs,
             checks=checks,
             remaining_risks=_remaining_risks(checks),
+            repair_attempts=repair_attempts,
+            repair_failure_reason=repair_failure_reason,
         )
         logger.info(
             "execution_completed project=%s files=%s checks=%s success=%s",
@@ -756,7 +900,87 @@ class ExecutionWorkflow:
             [check.name for check in checks],
             all(check.success for check in checks),
         )
+        final_state = (
+            CodeWorkState.SUCCEEDED
+            if all(check.success for check in checks)
+            else CodeWorkState.FAILED
+        )
+        self._set_code_work_state(channel_id, thread_ts, final_state)
+        self._record_execution_trace(
+            agent,
+            channel_id,
+            thread_ts,
+            repair_attempts=repair_attempts,
+            termination_reason=(
+                repair_failure_reason
+                or ("verified" if final_state is CodeWorkState.SUCCEEDED else "verification_failed")
+            ),
+        )
         return render_execution_result(plan, result)
+
+    def _run_verifications(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        plan: ExecutionPlan,
+        tools: ProjectExecutionTools,
+        changed_files: list[str],
+    ) -> list[CommandResult]:
+        """Run only plan-approved checks and turn runner errors into observations."""
+        self._set_code_work_state(channel_id, thread_ts, CodeWorkState.VERIFYING)
+        checks: list[CommandResult] = []
+        for name in plan.verification_commands:
+            try:
+                checks.append(tools.run_check(name))
+            except subprocess.TimeoutExpired:
+                checks.append(
+                    CommandResult(name, False, "검증 시간 초과", VerificationStatus.TIMED_OUT)
+                )
+                break
+            except OSError as exc:
+                logger.warning(
+                    "verification_failed project=%s check=%s reason=%s applied=%s",
+                    plan.project_name,
+                    name,
+                    exc,
+                    changed_files,
+                )
+                checks.append(
+                    CommandResult(
+                        name,
+                        False,
+                        f"검증 도구를 시작할 수 없습니다 ({type(exc).__name__}).",
+                        VerificationStatus.ENVIRONMENT_ERROR,
+                    )
+                )
+                break
+        return checks
+
+    def _set_code_work_state(
+        self, channel_id: str, thread_ts: str, state: CodeWorkState
+    ) -> None:
+        self.code_work_state_store.set(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            state=state,
+        )
+
+    @staticmethod
+    def _record_execution_trace(
+        agent: object,
+        channel_id: str,
+        thread_ts: str,
+        *,
+        repair_attempts: int,
+        termination_reason: str,
+    ) -> None:
+        trace_store = getattr(agent, "thread_trace_store", None)
+        trace = trace_store.get(channel_id, thread_ts) if trace_store is not None else None
+        if trace is not None:
+            trace.record_code_work(
+                repair_attempts=repair_attempts,
+                termination_reason=termination_reason,
+            )
 
 
 def _preview_diffs(root: Path, steps: list[ExecutionStep]) -> list[tuple[str, str]]:
@@ -795,7 +1019,11 @@ def _render_diff_excerpt(diff: str, *, max_lines: int = 12) -> str:
 
 
 def render_plan_preview(
-    plan: ExecutionPlan, git: GitState, diffs: list[tuple[str, str]] | None = None
+    plan: ExecutionPlan,
+    git: GitState,
+    diffs: list[tuple[str, str]] | None = None,
+    *,
+    max_auto_repairs: int = DEFAULT_MAX_AUTO_REPAIRS,
 ) -> str:
     instructions = ", ".join(f"`{item}`" for item in plan.applied_agents) or "없음"
     skills = ", ".join(f"`{item}`" for item in plan.applied_skills) or "없음"
@@ -813,11 +1041,15 @@ def render_plan_preview(
         else "(변경 없음)"
     )
     return (
+        f"{render_code_work_status(CodeWorkState.AWAITING_CONFIRMATION)}\n"
         "코드 실행 계획을 만들었습니다.\n"
         f"목표: {plan.goal}\n프로젝트: `{plan.project_name}` ({git_summary})\n"
-        f"위험도: `{plan.risk}`\n영향 파일:\n{files}\n실행 단계:\n{steps}\n"
+        f"위험도: `{plan.risk}`\n승인 파일 범위:\n{files}\n실행 단계:\n{steps}\n"
         f"변경 미리보기:\n{diff_sections}\n"
-        f"검증: {checks}\n적용 AGENTS.md: {instructions}\n적용 Skill: {skills}\n\n"
+        f"고정 검증 명령: {checks}\n자동 복구 예산: 최대 {max_auto_repairs}회\n"
+        "미지원 작업: 임의 셸·HTTP·패키지 설치/삭제·rename·Git commit/push\n"
+        "남은 위험: 검증은 승인 후에만 실행되며, 환경 의존 오류가 발생할 수 있습니다.\n"
+        f"적용 AGENTS.md: {instructions}\n적용 Skill: {skills}\n\n"
         "내용을 확인한 뒤 같은 스레드에 `실행`이라고 보내면 적용합니다. "
         "`취소`하면 계획만 제거합니다."
     )
@@ -830,9 +1062,21 @@ def render_execution_result(plan: ExecutionPlan, result: ExecutionResult) -> str
     instructions = ", ".join(f"`{item}`" for item in plan.applied_agents) or "없음"
     skills = ", ".join(f"`{item}`" for item in plan.applied_skills) or "없음"
     outcome = (
-        "✅ 실행 및 검증 완료"
+        (
+            "❌ 구현 실패: 자동 복구 한도 초과"
+            if result.repair_failure_reason == "자동 복구 한도 초과"
+            else f"❌ 구현 실패: {result.repair_failure_reason}"
+        )
+        if result.repair_failure_reason
+        else (
+        (
+            f"✅ 구현 완료 (자동 복구 {result.repair_attempts}회)"
+            if result.repair_attempts
+            else render_code_work_status(CodeWorkState.SUCCEEDED)
+        )
         if all(check.success for check in result.checks)
-        else "⚠️ 실행 완료, 검증 실패"
+        else "⚠️ 변경 적용, 검증 실패"
+        )
     )
     return (
         f"{outcome}\n변경 파일:\n{changes}\nDiff 요약: {_diff_summary(result.diffs)}\n"
@@ -851,6 +1095,27 @@ def render_execution_failure(
         f"이미 적용된 파일:\n{applied}\n"
         "남은 단계는 진행하지 않았습니다. 위 파일들의 Git diff를 확인한 뒤 새 계획을 만들어 주세요."
     )
+
+
+def render_code_work_status(state: CodeWorkState, *, repair_attempt: int | None = None) -> str:
+    """Return the fixed, content-safe Slack text for a code-work lifecycle state.
+
+    State reporting is deliberately independent from model output: it exposes
+    progress without leaking prompts, file bodies, or agent reasoning.
+    """
+    messages = {
+        CodeWorkState.DISCOVERING: "🔎 코드 구조를 확인 중입니다…",
+        CodeWorkState.AWAITING_CONFIRMATION: "📝 구현 계획을 만들었습니다. 실행 확인을 기다립니다.",
+        CodeWorkState.IMPLEMENTING: "🛠️ 코드 변경을 적용했습니다. 검증 중입니다…",
+        CodeWorkState.VERIFYING: "🛠️ 코드 변경을 적용했습니다. 검증 중입니다…",
+        CodeWorkState.SUCCEEDED: "✅ 구현 및 검증 완료",
+        CodeWorkState.FAILED: "❌ 구현 실패",
+        CodeWorkState.CANCELLED: "🚫 구현 계획을 취소했습니다.",
+    }
+    if state is CodeWorkState.REPAIRING:
+        attempt = repair_attempt if repair_attempt is not None else 1
+        return f"🔁 테스트 실패를 분석해 수정 중입니다… ({attempt}/2)"
+    return messages.get(state, "코드 작업을 기다리고 있습니다.")
 
 
 def _project_path(root: Path, relative_path: str, *, allow_root: bool = False) -> Path:
@@ -917,6 +1182,11 @@ def _is_execution_request(text: str) -> bool:
     return any(marker in normalized for marker in _EXECUTION_MARKERS)
 
 
+def _is_plan_follow_request(text: str) -> bool:
+    normalized = text.casefold()
+    return "plan.md에 적은대로" in normalized or "plan.md에 적은 대로" in normalized
+
+
 _PROTECTED_META_BASENAMES = {"plan.md", "plan.archive.md", "claude.md", "agents.md"}
 _PROTECTED_META_PREFIXES = (".omx/", ".claude/", ".git/")
 
@@ -929,7 +1199,16 @@ def _is_protected_meta_path(path: str) -> bool:
     return normalized.startswith(_PROTECTED_META_PREFIXES)
 
 
-def _validate_plan(plan: ExecutionPlan, project_name: str, user_named_paths: Sequence[str]) -> None:
+def _validate_plan(
+    plan: ExecutionPlan,
+    project_name: str,
+    user_named_paths: Sequence[str],
+    *,
+    project_root: Path | None = None,
+    evidence_paths: Sequence[str] = (),
+    require_code_evidence: bool = False,
+    restrict_new_files_to_code_roots: bool = False,
+) -> None:
     if plan.project_name != project_name:
         raise ValueError("계획의 프로젝트가 요청 대상과 다릅니다")
     named = set(user_named_paths)
@@ -944,9 +1223,24 @@ def _validate_plan(plan: ExecutionPlan, project_name: str, user_named_paths: Seq
     if len(plan.steps) > 20 or len(plan.affected_files) > 20:
         raise ValueError("한 계획에서 변경할 수 있는 파일 수를 초과했습니다")
     if set(plan.affected_files) != {step.path for step in plan.steps}:
-        raise ValueError("영향 파일과 쓰기 단계가 일치하지 않습니다")
+        raise ValueError(
+            "승인 파일 범위 밖 수정이 포함되어 새 계획과 실행 확인이 필요합니다"
+        )
     for path in plan.affected_files:
         _project_path(Path("/safe-root"), path)
+        if (
+            restrict_new_files_to_code_roots
+            and project_root is not None
+            and not _project_path(project_root, path).exists()
+        ):
+            if not _is_source_or_test_path(path):
+                raise ValueError(
+                    f"새 파일 `{path}`은 `src/` 또는 `tests/` 아래에 만들어야 합니다"
+                )
+    if require_code_evidence and not any(_is_source_or_test_path(path) for path in evidence_paths):
+        raise ValueError(
+            "plan.md 실행에는 기존 `src/` 또는 `tests/` 파일을 읽은 구현 근거가 필요합니다"
+        )
     if any(step.action != "write_file" for step in plan.steps):
         raise ValueError("허용되지 않은 실행 단계가 포함되었습니다")
     if any(command not in _ALLOWED_VERIFICATIONS for command in plan.verification_commands):
@@ -955,13 +1249,45 @@ def _validate_plan(plan: ExecutionPlan, project_name: str, user_named_paths: Seq
         raise ValueError("검증 명령이 중복되었습니다")
 
 
+def _is_source_or_test_path(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return normalized.startswith("src/") or normalized.startswith("tests/")
+
+
+def _validate_repair_steps(steps: object, approved_paths: Sequence[str]) -> None:
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("자동 복구 단계가 비어 있습니다")
+    approved = set(approved_paths)
+    for step in steps:
+        if not isinstance(step, ExecutionStep) or step.action != "write_file":
+            raise ValueError("허용되지 않은 자동 복구 단계입니다")
+        if step.path not in approved:
+            raise ValueError("자동 복구에 승인 파일 범위 밖 수정이 필요합니다")
+        if _is_protected_meta_path(step.path):
+            raise ValueError("보호 파일은 자동 복구할 수 없어 새 계획과 확인이 필요합니다")
+
+
 def _fingerprint(request: str) -> str:
     return hashlib.sha256(request.strip().casefold().encode("utf-8")).hexdigest()
+
+
+def _repair_fingerprint(steps: Sequence[ExecutionStep]) -> str:
+    payload = [(step.path, step.content) for step in steps]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
+
+
+def _verification_fingerprint(checks: Sequence[CommandResult]) -> str:
+    payload = [(check.name, check.status, check.output) for check in checks if not check.success]
+    return hashlib.sha256(repr(payload).encode()).hexdigest()
 
 
 def _remaining_risks(checks: list[CommandResult]) -> list[str]:
     if not checks:
         return ["검증 명령이 실행하지 않은 환경별 통합 테스트는 확인되지 않았습니다."]
+    if any(check.status is VerificationStatus.ENVIRONMENT_ERROR for check in checks):
+        return ["검증 실행 환경 오류를 해결한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
+    if any(check.status is VerificationStatus.TIMED_OUT for check in checks):
+        return ["검증 시간 초과 원인을 확인한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
     if any(not check.success for check in checks):
         return ["실패한 검증을 수정한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
     return []
@@ -971,7 +1297,12 @@ def _render_check(check: CommandResult) -> str:
     if check.success:
         return f"- ✅ {check.name}"
     detail = _redact_output(check.output).replace("\n", " ")[:300] or "출력 없음"
-    return f"- ❌ {check.name}: {detail}"
+    label = {
+        VerificationStatus.ENVIRONMENT_ERROR: "실행 환경 오류",
+        VerificationStatus.TIMED_OUT: "시간 초과",
+    }.get(check.status or VerificationStatus.FAILED)
+    prefix = f"- ❌ {check.name} ({label})" if label else f"- ❌ {check.name}"
+    return f"{prefix}: {detail}"
 
 
 def _diff_summary(diffs: list[str]) -> str:

@@ -25,6 +25,12 @@ def test_github_integration_plan_is_code_work_even_with_project_name_attached() 
     assert routed.intent is RequestIntent.CODE_WORK
 
 
+def test_plan_file_development_request_is_code_work() -> None:
+    routed = RequestRouter().route("plan.md에 적은대로 개발 진행해볼래?")
+
+    assert routed.intent is RequestIntent.CODE_WORK
+
+
 def test_linear_workspace_read_is_not_project_analysis() -> None:
     routed = RequestRouter().route("Linear 이슈 조회")
 
