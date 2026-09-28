@@ -6,6 +6,7 @@ seam.
 from __future__ import annotations
 
 from src.agent import FakeAnalysisAgent, get_agent
+from src.agent_trace import ThreadTraceStore
 from src.config import Settings
 from src.langchain_agent import LangChainAnalysisAgent
 from src.tools import list_files, list_projects, read_file
@@ -35,3 +36,15 @@ def test_get_agent_returns_langchain_agent_for_openai() -> None:
 
     assert isinstance(agent, LangChainAnalysisAgent)
     assert agent.tool_funcs == [list_projects, read_file, list_files]
+
+
+def test_get_agent_wires_a_thread_trace_store_for_real_deployment() -> None:
+    """Slack/HTTP entry points build one agent per process and share it across
+    every thread, so that one agent must already own a working
+    `ThreadTraceStore` — not rely on a caller to remember to pass one."""
+    settings = Settings(anthropic_api_key="sk-ant-fake")
+
+    agent = get_agent("anthropic", settings=settings)
+
+    assert isinstance(agent, LangChainAnalysisAgent)
+    assert isinstance(agent.thread_trace_store, ThreadTraceStore)

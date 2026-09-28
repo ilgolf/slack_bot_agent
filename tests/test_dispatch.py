@@ -15,9 +15,13 @@ from src.thread_context import ThreadContextStore
 class RecordingAgent:
     def __init__(self) -> None:
         self.questions: list[str] = []
+        self.thread_keys: list[tuple[str, str]] = []
 
-    def analyze(self, question: str) -> AnalysisResult:
+    def analyze(
+        self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
+    ) -> AnalysisResult:
         self.questions.append(question)
+        self.thread_keys.append((channel_id, thread_ts))
         return AnalysisResult(summary="요약", findings=[])
 
 
@@ -77,8 +81,28 @@ def test_dispatch_command_passes_prior_thread_context_to_agent(tmp_path: Path) -
     ]
 
 
+def test_dispatch_command_forwards_channel_and_thread_to_agent(tmp_path: Path) -> None:
+    """The agent needs the caller's thread identity for a future thread-scoped
+    trace store — dispatch already has both, so it must hand them through."""
+    thread_context = ThreadContextStore(root=tmp_path / "context")
+    agent = RecordingAgent()
+
+    dispatch_command(
+        "C123",
+        "168000.0001",
+        "이 프로젝트 뭐 하는 거야?",
+        thread_context=thread_context,
+        agent=agent,
+    )
+
+    assert agent.thread_keys == [("C123", "168000.0001")]
+
+
 class BoomAgent:
-    def analyze(self, question: str) -> AnalysisResult:
+    def analyze(
+        self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
+    ) -> AnalysisResult:
+        del channel_id, thread_ts
         raise AnalysisAgentError("모델 응답 파싱 실패")
 
 

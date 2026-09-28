@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -24,6 +25,8 @@ from typing import Literal, Protocol
 from src.project_resolver import InvalidProjectName, ProjectResolver, UnknownProject
 from src.request_classifier import classify_request
 from src.thread_context import ThreadContextStore
+from src.tool_policy import ToolCategory
+from src.tool_registry import ToolRegistry, definition
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,10 @@ _EXECUTION_MARKERS = (
     "리팩토",
     "추가",
     "테스트 실행",
+    "test 실행",
+    "pytest",
+    "ruff",
+    "mypy",
     "린트",
     "타입 검사",
     "fix",
@@ -49,9 +56,21 @@ _EXECUTION_MARKERS = (
     "run test",
     "run lint",
     "typecheck",
+    "작업 plan",
+    "작업 계획",
+    "구현 계획",
+    "계획 짜",
+    "plan 짜",
+    "plan 만들어",
+    "설계해",
+    "github 연동",
+    "gitlab 연동",
+    "api 연동",
+    "연동 작업",
 )
 _ALLOWED_VERIFICATIONS = ("run_tests", "run_lint", "run_typecheck")
 _MAX_WRITE_BYTES = 1_000_000
+_GREP_IGNORED_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__"})
 
 
 class ExecutionRisk(StrEnum):
@@ -229,12 +248,24 @@ class ExecutionPlan:
     applied_skills: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ExistingFile:
+    """A target file's current content, read before planning so the model
+    edits real code instead of guessing at it. `content` is `None` when the
+    path doesn't exist yet — a plausible new-file request, not a read error.
+    """
+
+    relative_path: str
+    content: str | None
+
+
 class ExecutionPlanCreator(Protocol):
     def create_execution_plan(
         self,
         request: str,
         context: ProjectContext,
         skills: list[AppliedSkill],
+        existing_files: list[ExistingFile],
     ) -> ExecutionPlan: ...
 
 
@@ -290,8 +321,62 @@ class PendingPlanStore:
         status, _ = self.take(channel_id, thread_ts)
         return status
 
+    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
+        """Check a non-expired draft without consuming its confirmation."""
+        with self._lock:
+            pending = self._plans.get((channel_id, thread_ts))
+            if pending is None:
+                return False
+            if self._expired(pending):
+                self._plans.pop((channel_id, thread_ts), None)
+                return False
+            return True
+
+    def peek(self, channel_id: str, thread_ts: str) -> ExecutionPlan | None:
+        """Read a non-expired draft's plan without consuming its confirmation
+        — for a clarification message that describes what's pending."""
+        with self._lock:
+            pending = self._plans.get((channel_id, thread_ts))
+            if pending is None:
+                return None
+            if self._expired(pending):
+                self._plans.pop((channel_id, thread_ts), None)
+                return None
+            return pending.plan
+
     def _expired(self, pending: PendingPlan) -> bool:
         return datetime.now(UTC) - pending.created_at > self.ttl
+
+
+class AwaitingProjectStore:
+    """Remembers a code-work request that stalled only for lack of a project
+    name, so the very next reply supplying just the name resumes it instead
+    of being judged as a fresh, markerless message. Thread context already
+    carries the original request text — this only needs to remember *that*
+    a request is waiting, TTL-bound like `PendingPlanStore`."""
+
+    def __init__(self, *, ttl: timedelta = timedelta(minutes=15)) -> None:
+        self.ttl = ttl
+        self._lock = Lock()
+        self._marked_at: dict[tuple[str, str], datetime] = {}
+
+    def mark(self, channel_id: str, thread_ts: str) -> None:
+        with self._lock:
+            self._marked_at[(channel_id, thread_ts)] = datetime.now(UTC)
+
+    def clear(self, channel_id: str, thread_ts: str) -> None:
+        with self._lock:
+            self._marked_at.pop((channel_id, thread_ts), None)
+
+    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
+        with self._lock:
+            marked_at = self._marked_at.get((channel_id, thread_ts))
+            if marked_at is None:
+                return False
+            if datetime.now(UTC) - marked_at > self.ttl:
+                self._marked_at.pop((channel_id, thread_ts), None)
+                return False
+            return True
 
 
 @dataclass(frozen=True)
@@ -326,13 +411,13 @@ class ProjectExecutionTools:
         return _project_path(self.root, relative_path).read_text(encoding="utf-8")
 
     def list_files(self, relative_path: str = ".") -> list[str]:
-        path = _project_path(self.root, relative_path)
+        path = _project_path(self.root, relative_path, allow_root=True)
         return sorted(item.name for item in path.iterdir())
 
     def grep(self, query: str, relative_path: str = ".") -> list[str]:
         if not query or len(query) > 200:
             raise ValueError("검색어가 올바르지 않습니다")
-        directory = _project_path(self.root, relative_path)
+        directory = _project_path(self.root, relative_path, allow_root=True)
         if not directory.is_dir():
             raise ValueError("검색 경로가 디렉터리가 아닙니다")
         matches: list[str] = []
@@ -341,12 +426,32 @@ class ProjectExecutionTools:
                 break
             if path.is_symlink() or not path.is_file():
                 continue
+            relative_parts = path.relative_to(self.root).parts
+            if _GREP_IGNORED_DIRS.intersection(relative_parts):
+                continue
             try:
                 if query in path.read_text(encoding="utf-8"):
                     matches.append(str(path.relative_to(self.root)))
             except (OSError, UnicodeDecodeError):
                 continue
         return matches
+
+    def git_status(self) -> list[str]:
+        return _read_git_state(self.root).changed_files
+
+    def git_diff(self, relative_path: str | None = None) -> str:
+        command = ["git", "-C", str(self.root), "diff", "--"]
+        if relative_path is not None:
+            _project_path(self.root, relative_path)
+            command.append(relative_path)
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        return (completed.stdout + completed.stderr)[-32_000:]
 
     def write_file(self, relative_path: str, content: str) -> tuple[str, str]:
         if relative_path not in self.allowed_paths:
@@ -382,6 +487,48 @@ class ProjectExecutionTools:
         output = (completed.stdout + completed.stderr).strip()
         return CommandResult(name=name, success=completed.returncode == 0, output=output[-2000:])
 
+    def tool_registry(self) -> ToolRegistry:
+        """Expose the same bounded primitives to a future iterative planner.
+
+        This prevents a second, weaker path-validation implementation from
+        being introduced for tool calling.
+        """
+        return ToolRegistry(
+            [
+                definition("list_files", ToolCategory.PROJECT_READ, self.list_files),
+                definition(
+                    "read_file",
+                    ToolCategory.PROJECT_READ,
+                    self.read_file,
+                    evidence_arg="relative_path",
+                ),
+                definition("grep", ToolCategory.PROJECT_SEARCH, self.grep),
+                definition("git_status", ToolCategory.GIT_READ, self.git_status),
+                definition("git_diff", ToolCategory.GIT_READ, self.git_diff),
+                definition("write_file", ToolCategory.PROJECT_WRITE, self.write_file),
+                definition("run_tests", ToolCategory.VERIFY, lambda: self.run_check("run_tests")),
+                definition("run_lint", ToolCategory.VERIFY, lambda: self.run_check("run_lint")),
+                definition(
+                    "run_typecheck", ToolCategory.VERIFY, lambda: self.run_check("run_typecheck")
+                ),
+            ]
+        )
+
+
+def _read_existing_files(root: Path, target_paths: list[str]) -> list[ExistingFile]:
+    """Read each candidate target path with the same bounded validation as the
+    execution tools; a missing or invalid path becomes `content=None` rather
+    than raising, since the request may be to create that file."""
+    tools = ProjectExecutionTools(root, [])
+    files: list[ExistingFile] = []
+    for path in target_paths:
+        try:
+            content: str | None = tools.read_file(path)
+        except (OSError, ValueError):
+            content = None
+        files.append(ExistingFile(relative_path=path, content=content))
+    return files
+
 
 class ExecutionWorkflow:
     """Creates a preview, then applies only its confirmed bounded plan."""
@@ -393,11 +540,13 @@ class ExecutionWorkflow:
         context_loader: ProjectContextLoader | None = None,
         skill_registry: SkillRegistry | None = None,
         plan_store: PendingPlanStore | None = None,
+        awaiting_project_store: AwaitingProjectStore | None = None,
     ) -> None:
         self.project_resolver = project_resolver
         self.context_loader = context_loader or ProjectContextLoader(project_resolver)
         self.skill_registry = skill_registry or SkillRegistry()
         self.plan_store = plan_store or PendingPlanStore()
+        self.awaiting_project_store = awaiting_project_store or AwaitingProjectStore()
 
     def process(
         self,
@@ -420,22 +569,59 @@ class ExecutionWorkflow:
             if defer_missing_confirmation and cancellation_response is None:
                 return None
             return cancellation_response
-        if not _is_execution_request(command_text):
+        # A thread with a plan already pending can be redirected by naming a
+        # different file alone — no modification verb required. Without a
+        # pending plan, a bare file mention still isn't an execution request.
+        has_pending_plan = self.plan_store.has_pending(channel_id, thread_ts)
+        redirect_with_pending_plan = has_pending_plan and _PATH_IN_REQUEST.search(command_text)
+        # A stalled request awaiting only a project name resumes on the very
+        # next message — that reply (e.g. just a bare project name) has no
+        # code-work marker of its own and would otherwise be judged unrelated.
+        awaiting_project = self.awaiting_project_store.has_pending(channel_id, thread_ts)
+        if (
+            not _is_execution_request(command_text)
+            and not redirect_with_pending_plan
+            and not awaiting_project
+        ):
+            if has_pending_plan:
+                return self._pending_plan_clarification(channel_id, thread_ts)
             return None
 
-        project_name = self._project_name(channel_id, thread_ts, command_text, thread_context)
+        contextual_text = self._with_thread_context(
+            channel_id, thread_ts, command_text, thread_context
+        )
+        project_name = self._project_name(contextual_text)
         if project_name is None:
+            self.awaiting_project_store.mark(channel_id, thread_ts)
             return "코드 작업할 대상 프로젝트명을 요청에 포함해 주세요."
+        self.awaiting_project_store.clear(channel_id, thread_ts)
         creator = getattr(agent, "create_execution_plan", None)
         if not callable(creator):
             return "코드 실행 계획에는 LLM 코드 에이전트가 필요합니다."
 
-        target_paths = _PATH_IN_REQUEST.findall(command_text)
+        # A file named in this exact message always wins — it's what the user
+        # just said, e.g. redirecting a pending plan to a different file. Only
+        # fall back to thread context when this message names nothing at all.
+        target_paths = _PATH_IN_REQUEST.findall(command_text) or _PATH_IN_REQUEST.findall(
+            contextual_text
+        )
         try:
             context = self.context_loader.load(project_name, target_paths=target_paths)
             skills = self.skill_registry.select(intent=command_text, project_root=context.root)
-            plan = creator(command_text, context, skills)
-            _validate_plan(plan, project_name)
+            existing_files = _read_existing_files(context.root, target_paths)
+            plan = creator(contextual_text, context, skills, existing_files)
+            if not target_paths and plan.affected_files:
+                # No file was named, so the model proposed one itself while
+                # planning. Re-read whatever it picked and ask again so an
+                # already-existing file still isn't written to blind.
+                reread = _read_existing_files(context.root, plan.affected_files)
+                if any(item.content is not None for item in reread):
+                    existing_files = reread
+                    context = self.context_loader.load(
+                        project_name, target_paths=plan.affected_files
+                    )
+                    plan = creator(contextual_text, context, skills, existing_files)
+            _validate_plan(plan, project_name, target_paths)
             detailed_context = self.context_loader.load(
                 project_name, target_paths=plan.affected_files
             )
@@ -464,22 +650,44 @@ class ExecutionWorkflow:
             plan.risk,
             plan.applied_skills,
         )
-        return render_plan_preview(plan, detailed_context.git)
+        diffs = _preview_diffs(detailed_context.root, plan.steps)
+        return render_plan_preview(plan, detailed_context.git, diffs)
 
-    def _project_name(
-        self,
-        channel_id: str,
-        thread_ts: str,
-        text: str,
-        thread_context: ThreadContextStore,
-    ) -> str | None:
-        # Keep project selection deterministic and let the current message win.
+    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
+        return self.plan_store.has_pending(channel_id, thread_ts)
+
+    def has_open_conversation(self, channel_id: str, thread_ts: str) -> bool:
+        """True when this thread has an unfinished code-work exchange — a
+        full plan awaiting confirmation, or a request stalled only for a
+        project name — so the coordinator should give `process()` a second
+        look at an otherwise-unclassified message before general analysis."""
+        return self.plan_store.has_pending(
+            channel_id, thread_ts
+        ) or self.awaiting_project_store.has_pending(channel_id, thread_ts)
+
+    def _pending_plan_clarification(self, channel_id: str, thread_ts: str) -> str | None:
+        """A fixed, deterministic nudge — never an LLM call — so this never
+        varies in wording or risks an open-ended clarification loop."""
+        plan = self.plan_store.peek(channel_id, thread_ts)
+        if plan is None:
+            return None
+        files = ", ".join(f"`{path}`" for path in plan.affected_files) or "지정된 파일 없음"
+        return (
+            f"보류 중인 실행 계획이 있습니다: {plan.goal} (대상: {files}).\n"
+            "이대로 진행하려면 `실행`, 취소하려면 `취소`라고 답해주세요. "
+            "다른 파일을 대상으로 하려면 파일 경로를 알려주세요."
+        )
+
+    def _project_name(self, contextual_text: str) -> str | None:
+        request = classify_request(contextual_text, self.project_resolver)
+        return request.project_name
+
+    @staticmethod
+    def _with_thread_context(
+        channel_id: str, thread_ts: str, text: str, thread_context: ThreadContextStore
+    ) -> str:
         prior = thread_context.read(channel_id, thread_ts)
-        question = f"스레드 맥락:\n{prior}\n현재 요청:\n{text}" if prior else text
-        request = classify_request(question, self.project_resolver)
-        if request.project_name is not None:
-            return request.project_name
-        return None
+        return f"스레드 맥락:\n{prior}\n현재 요청:\n{text}" if prior else text
 
     def _cancel_pending(self, channel_id: str, thread_ts: str) -> str | None:
         status = self.plan_store.cancel(channel_id, thread_ts)
@@ -498,19 +706,42 @@ class ExecutionWorkflow:
             return "실행할 보류 계획이 없습니다. 먼저 코드 작업 요청을 보내 주세요."
 
         plan = pending.plan
+        changed_files: list[str] = []
+        diffs: list[str] = []
         try:
             context = self.context_loader.load(plan.project_name, target_paths=plan.affected_files)
             tools = ProjectExecutionTools(context.root, plan.affected_files)
-            changed_files: list[str] = []
-            diffs: list[str] = []
             for step in plan.steps:
                 changed_file, diff = tools.write_file(step.path, step.content)
                 changed_files.append(changed_file)
                 diffs.append(diff)
-            checks = [tools.run_check(name) for name in plan.verification_commands]
-        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-            logger.warning("execution_failed project=%s reason=%s", plan.project_name, exc)
-            return render_execution_failure(plan, str(exc))
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "execution_failed project=%s reason=%s applied=%s",
+                plan.project_name,
+                exc,
+                changed_files,
+            )
+            return render_execution_failure(plan, str(exc), changed_files)
+
+        # A verification timeout is a failed check, not a run-ending error: the
+        # writes above already succeeded and stay reported, but no further
+        # verification command is attempted once one times out.
+        checks: list[CommandResult] = []
+        for name in plan.verification_commands:
+            try:
+                checks.append(tools.run_check(name))
+            except subprocess.TimeoutExpired:
+                checks.append(CommandResult(name=name, success=False, output="검증 시간 초과"))
+                break
+            except ValueError as exc:
+                logger.warning(
+                    "execution_failed project=%s reason=%s applied=%s",
+                    plan.project_name,
+                    exc,
+                    changed_files,
+                )
+                return render_execution_failure(plan, str(exc), changed_files)
 
         result = ExecutionResult(
             changed_files=changed_files,
@@ -528,7 +759,44 @@ class ExecutionWorkflow:
         return render_execution_result(plan, result)
 
 
-def render_plan_preview(plan: ExecutionPlan, git: GitState) -> str:
+def _preview_diffs(root: Path, steps: list[ExecutionStep]) -> list[tuple[str, str]]:
+    """Compute a read-only unified diff per step against the file currently on
+    disk — nothing is written. A missing/invalid path is treated as empty
+    "before" content, matching a new-file step."""
+    diffs: list[tuple[str, str]] = []
+    for step in steps:
+        before = ""
+        try:
+            target = _project_path(root, step.path)
+            if target.exists():
+                before = target.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            before = ""
+        diff = "".join(
+            difflib.unified_diff(
+                before.splitlines(keepends=True),
+                step.content.splitlines(keepends=True),
+                fromfile=f"a/{step.path}",
+                tofile=f"b/{step.path}",
+            )
+        )
+        diffs.append((step.path, diff))
+    return diffs
+
+
+def _render_diff_excerpt(diff: str, *, max_lines: int = 12) -> str:
+    lines = diff.splitlines()
+    if not lines:
+        return "(변경 없음)"
+    excerpt = "\n".join(lines[:max_lines])
+    if len(lines) > max_lines:
+        excerpt += f"\n... ({len(lines) - max_lines}줄 생략)"
+    return excerpt
+
+
+def render_plan_preview(
+    plan: ExecutionPlan, git: GitState, diffs: list[tuple[str, str]] | None = None
+) -> str:
     instructions = ", ".join(f"`{item}`" for item in plan.applied_agents) or "없음"
     skills = ", ".join(f"`{item}`" for item in plan.applied_skills) or "없음"
     files = "\n".join(f"- `{path}`" for path in plan.affected_files) or "- 파일 변경 없음"
@@ -537,10 +805,18 @@ def render_plan_preview(plan: ExecutionPlan, git: GitState) -> str:
     git_summary = (
         "Git 저장소 아님" if not git.is_repository else f"기존 변경 {len(git.changed_files)}개"
     )
+    diff_sections = (
+        "\n\n".join(
+            f"`{path}`:\n```\n{_render_diff_excerpt(diff)}\n```" for path, diff in diffs
+        )
+        if diffs
+        else "(변경 없음)"
+    )
     return (
         "코드 실행 계획을 만들었습니다.\n"
         f"목표: {plan.goal}\n프로젝트: `{plan.project_name}` ({git_summary})\n"
         f"위험도: `{plan.risk}`\n영향 파일:\n{files}\n실행 단계:\n{steps}\n"
+        f"변경 미리보기:\n{diff_sections}\n"
         f"검증: {checks}\n적용 AGENTS.md: {instructions}\n적용 Skill: {skills}\n\n"
         "내용을 확인한 뒤 같은 스레드에 `실행`이라고 보내면 적용합니다. "
         "`취소`하면 계획만 제거합니다."
@@ -565,17 +841,22 @@ def render_execution_result(plan: ExecutionPlan, result: ExecutionResult) -> str
     )
 
 
-def render_execution_failure(plan: ExecutionPlan, reason: str) -> str:
+def render_execution_failure(
+    plan: ExecutionPlan, reason: str, changed_files: list[str] | None = None
+) -> str:
+    applied = "\n".join(f"- `{path}`" for path in changed_files or []) or "- 없음"
     return (
         "❌ 실행 실패\n"
         f"프로젝트: `{plan.project_name}`\n원인: {reason}\n"
-        "일부 파일이 이미 변경됐을 수 있으므로 Git diff를 확인한 뒤 새 계획을 만들어 주세요."
+        f"이미 적용된 파일:\n{applied}\n"
+        "남은 단계는 진행하지 않았습니다. 위 파일들의 Git diff를 확인한 뒤 새 계획을 만들어 주세요."
     )
 
 
-def _project_path(root: Path, relative_path: str) -> Path:
+def _project_path(root: Path, relative_path: str, *, allow_root: bool = False) -> Path:
     path = Path(relative_path)
-    if str(path) in {"", "."} or path.is_absolute() or ".." in path.parts:
+    is_root = str(path) in {"", "."}
+    if (is_root and not allow_root) or path.is_absolute() or ".." in path.parts:
         raise ValueError(f"허용되지 않은 경로입니다: {relative_path}")
     target = (root / path).resolve()
     if not target.is_relative_to(root.resolve()):
@@ -636,9 +917,28 @@ def _is_execution_request(text: str) -> bool:
     return any(marker in normalized for marker in _EXECUTION_MARKERS)
 
 
-def _validate_plan(plan: ExecutionPlan, project_name: str) -> None:
+_PROTECTED_META_BASENAMES = {"plan.md", "plan.archive.md", "claude.md", "agents.md"}
+_PROTECTED_META_PREFIXES = (".omx/", ".claude/", ".git/")
+
+
+def _is_protected_meta_path(path: str) -> bool:
+    normalized = path.replace("\\", "/").casefold()
+    basename = normalized.rsplit("/", 1)[-1]
+    if basename in _PROTECTED_META_BASENAMES:
+        return True
+    return normalized.startswith(_PROTECTED_META_PREFIXES)
+
+
+def _validate_plan(plan: ExecutionPlan, project_name: str, user_named_paths: Sequence[str]) -> None:
     if plan.project_name != project_name:
         raise ValueError("계획의 프로젝트가 요청 대상과 다릅니다")
+    named = set(user_named_paths)
+    for path in plan.affected_files:
+        if _is_protected_meta_path(path) and path not in named:
+            raise ValueError(
+                f"`{path}`는 프로젝트 관리 파일이라 사용자가 직접 지정한 경우에만 "
+                "수정할 수 있습니다"
+            )
     if plan.risk is ExecutionRisk.HIGH:
         raise ValueError("고위험 작업(의존성·네트워크·삭제·Git push)은 지원하지 않습니다")
     if len(plan.steps) > 20 or len(plan.affected_files) > 20:

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 ArtifactKind = Literal["text", "table"]
 _REQUEST = re.compile(r"(?:저장\s*위치|저장위치)\s*[:：]\s*(\S+)", re.IGNORECASE)
 _CONFIRMATION = re.compile(r"^(저장|저장해줘|저장합니다)$")
+_CANCELLATION = re.compile(r"^(취소|취소해줘|취소합니다)$")
 _SLACK_MENTION = re.compile(r"<@[^>]+>")
 _TEXT_SUFFIXES = {".md", ".txt", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".html", ".css"}
 _TABLE_SUFFIXES = {".csv", ".xlsx"}
@@ -52,6 +53,9 @@ class PendingArtifactStore:
     def remove(self, channel_id: str, thread_ts: str) -> None:
         self._drafts.pop((channel_id, thread_ts), None)
 
+    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
+        return self.get(channel_id, thread_ts) is not None
+
 
 class ArtifactGenerationWorkflow:
     """Builds a preview from thread context and writes it only after confirmation."""
@@ -71,6 +75,11 @@ class ArtifactGenerationWorkflow:
         command_text = _SLACK_MENTION.sub("", text).strip()
         if _CONFIRMATION.fullmatch(command_text):
             return self._save_pending(channel_id, thread_ts)
+        if _CANCELLATION.fullmatch(command_text):
+            if not self.draft_store.has_pending(channel_id, thread_ts):
+                return None
+            self.draft_store.remove(channel_id, thread_ts)
+            return "보류된 파일 초안을 취소했습니다. 파일은 생성하지 않았습니다."
 
         match = _REQUEST.search(command_text)
         if not _is_generation_request(command_text):
@@ -104,6 +113,9 @@ class ArtifactGenerationWorkflow:
             len(draft.rows or []),
         )
         return render_preview(draft)
+
+    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
+        return self.draft_store.has_pending(channel_id, thread_ts)
 
     def _save_pending(self, channel_id: str, thread_ts: str) -> str | None:
         draft = self.draft_store.get(channel_id, thread_ts)
@@ -177,11 +189,13 @@ def write_xlsx(draft: ArtifactDraft) -> None:
     _create_parent(draft.destination)
     values = [headers, *[[row.get(header, "") for header in headers] for row in rows]]
     worksheet_rows = "".join(
-        f'<row r="{index}">' + "".join(
+        f'<row r="{index}">'
+        + "".join(
             f'<c r="{_column_name(column)}{index}" t="inlineStr">'
             f"<is><t>{escape(value)}</t></is></c>"
             for column, value in enumerate(row, start=1)
-        ) + "</row>"
+        )
+        + "</row>"
         for index, row in enumerate(values, start=1)
     )
     files = {
@@ -204,12 +218,12 @@ def write_xlsx(draft: ArtifactDraft) -> None:
 def render_preview(draft: ArtifactDraft) -> str:
     if draft.kind == "table":
         headers, rows = _table_data(draft)
-        sample = "\n".join(
-            " | ".join(row.get(header, "") for header in headers) for row in rows[:3]
-        ) or "(행 없음)"
+        sample = (
+            "\n".join(" | ".join(row.get(header, "") for header in headers) for row in rows[:3])
+            or "(행 없음)"
+        )
         description = (
-            f"총 {len(rows)}행, 열: {', '.join(headers)}\n"
-            f"샘플(최대 3행):\n```\n{sample}\n```"
+            f"총 {len(rows)}행, 열: {', '.join(headers)}\n샘플(최대 3행):\n```\n{sample}\n```"
         )
     else:
         content_preview = "\n".join((draft.content or "").splitlines()[:20])

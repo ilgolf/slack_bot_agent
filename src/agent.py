@@ -33,11 +33,16 @@ class AnalysisResult:
 
 
 class AnalysisAgent(Protocol):
-    def analyze(self, question: str) -> AnalysisResult: ...
+    def analyze(
+        self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
+    ) -> AnalysisResult: ...
 
 
 class FakeAnalysisAgent:
-    def analyze(self, question: str) -> AnalysisResult:
+    def analyze(
+        self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
+    ) -> AnalysisResult:
+        del channel_id, thread_ts
         return AnalysisResult(
             summary=f"'{question}'에 대한 가짜 분석 결과입니다.",
             findings=["가짜 finding 1", "가짜 finding 2"],
@@ -66,6 +71,7 @@ def get_agent(provider: str, *, settings: Settings) -> AnalysisAgent | LangChain
             chat_model=anthropic_chat_model,
             project_resolver=project_resolver,
             tools=[list_projects, read_file, list_files],
+            max_tool_iterations=settings.agent_max_tool_iterations,
         )
 
     if provider == "openai":
@@ -81,6 +87,7 @@ def get_agent(provider: str, *, settings: Settings) -> AnalysisAgent | LangChain
             chat_model=openai_chat_model,
             project_resolver=project_resolver,
             tools=[list_projects, read_file, list_files],
+            max_tool_iterations=settings.agent_max_tool_iterations,
         )
 
     raise ValueError(f"unknown LLM provider: {provider!r}")

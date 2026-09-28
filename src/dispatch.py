@@ -23,33 +23,38 @@ def dispatch_command(
     *,
     thread_context: ThreadContextStore,
     agent: AnalysisAgent,
+    record_context: bool = True,
 ) -> str:
     if not text.strip():
         return ""
 
     system_response = answer_system_inquiry(text)
     if system_response is not None:
-        thread_context.append(channel_id, thread_ts, text)
-        thread_context.append(channel_id, thread_ts, system_response)
+        if record_context:
+            thread_context.append(channel_id, thread_ts, text)
+            thread_context.append(channel_id, thread_ts, system_response)
         logger.info("system_inquiry_completed kind=external_integration")
         return system_response
 
     prior_context = thread_context.read(channel_id, thread_ts)
-    thread_context.append(channel_id, thread_ts, text)
+    if record_context:
+        thread_context.append(channel_id, thread_ts, text)
     question = text
     if prior_context:
         question = f"스레드 맥락:\n{prior_context}\n현재 요청:\n{text}"
 
     try:
-        result = agent.analyze(question)
+        result = agent.analyze(question, channel_id=channel_id, thread_ts=thread_ts)
     except AnalysisAgentError as exc:
         response = f"❌ 작업 실패\n- {exc}"
-        thread_context.append(channel_id, thread_ts, response)
+        if record_context:
+            thread_context.append(channel_id, thread_ts, response)
         logger.warning("analysis_failed reason=%s", exc)
         return response
 
     response = render_result(result)
-    thread_context.append(channel_id, thread_ts, response)
+    if record_context:
+        thread_context.append(channel_id, thread_ts, response)
     logger.info("analysis_completed sources=%s", result.sources)
     return response
 

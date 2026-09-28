@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     llm_provider: str = "fake"
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
+    agent_max_tool_iterations: int = 16
 
     # Linear — a Personal API key for this local PC installation only.
     linear_api_key: str | None = None

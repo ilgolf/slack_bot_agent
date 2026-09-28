@@ -91,6 +91,18 @@ def test_missing_key_returns_setup_without_requesting_linear() -> None:
     assert "LINEAR_API_KEY" in response
 
 
+def test_project_test_request_is_not_treated_as_a_linear_workspace_request() -> None:
+    workflow, operations = _workflow()
+
+    response = _process(
+        workflow,
+        "piplup-agent-v2 project에 linear 연동 부분 test 실행해볼래?",
+    )
+
+    assert response is None
+    assert operations == []
+
+
 def test_read_request_runs_without_project_analysis() -> None:
     workflow, operations = _workflow()
 

@@ -22,6 +22,8 @@ from src.execution_workflow import ExecutionWorkflow, SkillRegistry
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.observability import request_log_context
 from src.project_resolver import ProjectResolver
+from src.request_coordinator import RequestCoordinator
+from src.request_router import RequestIntent, RequestRouter
 from src.run_state import ThreadRunStore
 from src.thread_context import ThreadContextStore
 
@@ -40,6 +42,7 @@ def handle_app_mention(
     artifact_workflow: ArtifactGenerationWorkflow | None = None,
     execution_workflow: ExecutionWorkflow | None = None,
     linear_workflow: LinearIntegrationWorkflow | None = None,
+    coordinator: RequestCoordinator | None = None,
 ) -> None:
     channel_id = event["channel"]
     thread_ts = event.get("thread_ts", event["ts"])
@@ -53,49 +56,67 @@ def handle_app_mention(
     ):
         return
 
-    say(text="분석 중입니다…", thread_ts=thread_ts)
+    initial_status = "분석 중입니다…"
+    if coordinator is not None:
+        intent = coordinator.router.route(text).intent
+        if intent is RequestIntent.CODE_WORK:
+            initial_status = "계획 중입니다…"
+        elif intent in {RequestIntent.LINEAR_READ, RequestIntent.LINEAR_MUTATION}:
+            initial_status = "Linear 작업 중입니다…"
+        elif intent is RequestIntent.ARTIFACT_GENERATION:
+            initial_status = "파일 초안 생성 중입니다…"
+    say(text=initial_status, thread_ts=thread_ts)
     if run_store is not None:
         run_store.set_running(channel_id=channel_id, thread_ts=thread_ts)
 
     with request_log_context(uuid4().hex, channel_id, thread_ts):
         try:
-            response = None
-            if execution_workflow is not None:
-                response = execution_workflow.process(
+            if coordinator is not None:
+                _, response = coordinator.process(
                     channel_id=channel_id,
                     thread_ts=thread_ts,
                     text=text,
-                    thread_context=thread_context,
-                    agent=agent,
-                    defer_missing_confirmation=True,
-                )
-            if linear_workflow is not None:
-                response = response or linear_workflow.process(
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
-                    text=text,
-                    thread_context=thread_context,
-                    agent=agent,
-                )
-            if artifact_workflow is not None:
-                response = response or artifact_workflow.process(
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
-                    text=text,
-                    thread_context=thread_context,
-                    agent=agent,
-                )
-            if response is None:
-                response = dispatch_command(
-                    channel_id,
-                    thread_ts,
-                    text,
                     thread_context=thread_context,
                     agent=agent,
                 )
             else:
-                thread_context.append(channel_id, thread_ts, text)
-                thread_context.append(channel_id, thread_ts, response)
+                response = None
+                if execution_workflow is not None:
+                    response = execution_workflow.process(
+                        channel_id=channel_id,
+                        thread_ts=thread_ts,
+                        text=text,
+                        thread_context=thread_context,
+                        agent=agent,
+                        defer_missing_confirmation=True,
+                    )
+                if linear_workflow is not None:
+                    response = response or linear_workflow.process(
+                        channel_id=channel_id,
+                        thread_ts=thread_ts,
+                        text=text,
+                        thread_context=thread_context,
+                        agent=agent,
+                    )
+                if artifact_workflow is not None:
+                    response = response or artifact_workflow.process(
+                        channel_id=channel_id,
+                        thread_ts=thread_ts,
+                        text=text,
+                        thread_context=thread_context,
+                        agent=agent,
+                    )
+                if response is None:
+                    response = dispatch_command(
+                        channel_id,
+                        thread_ts,
+                        text,
+                        thread_context=thread_context,
+                        agent=agent,
+                    )
+                else:
+                    thread_context.append(channel_id, thread_ts, text)
+                    thread_context.append(channel_id, thread_ts, response)
         except Exception:
             if run_store is not None:
                 run_store.fail(channel_id=channel_id, thread_ts=thread_ts)
@@ -135,6 +156,12 @@ def start_socket_mode(
         project_resolver=ProjectResolver(root=Path(settings.projects_root).expanduser()),
         skill_registry=SkillRegistry({"codex": "~/.codex/skills"}),
     )
+    coordinator = RequestCoordinator(
+        router=RequestRouter(),
+        execution_workflow=execution_workflow,
+        artifact_workflow=artifact_workflow,
+        linear_workflow=linear_workflow,
+    )
 
     @slack_app.event("app_mention")
     def _on_app_mention(event: Mapping[str, Any], say: Callable[..., Any]) -> None:
@@ -147,6 +174,7 @@ def start_socket_mode(
             artifact_workflow=artifact_workflow,
             execution_workflow=execution_workflow,
             linear_workflow=linear_workflow,
+            coordinator=coordinator,
         )
 
     @slack_app.event("message")

@@ -53,6 +53,32 @@ Linear에서 즉시 폐기하고 새 키로 `.env`를 교체한 뒤 봇을 재�
 
 봇은 Slack 멘션을 받은 뒤, 필요한 최소 파일만 읽고 근거와 함께 답하도록 동작합니다.
 
+### Code-agent routing and confirmation
+
+모든 Slack 메시지는 먼저 typed router를 통과합니다. 현재 메시지가 스레드 과거 단어보다
+우선하므로, Linear라는 단어가 들어 있어도 프로젝트 코드 요청은 Linear workspace API로
+잘못 전달되지 않습니다.
+
+| 요청 | 경로 | 확인 |
+| --- | --- | --- |
+| `piplup-agent-v2 Linear 연동 test 실행` | 프로젝트 코드 작업 | 계획 미리보기 → `실행` |
+| `Linear 이슈 조회` | Linear 조회 | 즉시 실행 |
+| `Linear 이슈 생성 ...` | Linear 변경 | 미리보기 → `실행` |
+| `스레드 요약해서 md 파일로 만들어` | 파일 생성 | 미리보기 → `저장` |
+
+읽기 전용 code-agent loop는 한 번에 registry에 등록된 도구 하나만 고르고 호출·결과 크기
+예산 안에서 실행합니다. 프로젝트 읽기/검색, Git 읽기, 고정 검증 명령만 제공하며 파일 쓰기와
+검증은 여전히 확인이 필요합니다. 임의 shell·HTTP·GraphQL, dependency install, 삭제·rename,
+Git push는 등록하지 않습니다.
+
+기본 도구 호출 예산은 16회이며 `.env`의 `AGENT_MAX_TOOL_ITERATIONS`로 조정할 수 있습니다.
+이 값을 늘려도 중복 호출·결과 크기·경로 정책은 계속 적용됩니다.
+
+같은 스레드에 `trace 요약`을 보내면 도구명·분류·결과 크기·시간·근거 경로만 보입니다.
+Slack 본문, prompt, 파일/생성물 내용, API key, Authorization header, Linear mutation body는
+trace와 로그에 기록하지 않습니다. 보류 미리보기는 메모리에만 있으므로 봇 재시작 뒤에는
+다시 생성해야 하며, 지원되는 작업은 15분 뒤 만료됩니다.
+
 ```text
 Slack 멘션
   → “분석 중입니다…” 응답

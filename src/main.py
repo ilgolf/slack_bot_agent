@@ -20,10 +20,11 @@ from slack_bolt.adapter.fastapi import SlackRequestHandler
 from src.agent import AnalysisAgent, get_agent
 from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings, get_settings
-from src.dispatch import dispatch_command
 from src.execution_workflow import ExecutionWorkflow, SkillRegistry
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.project_resolver import ProjectResolver
+from src.request_coordinator import RequestCoordinator
+from src.request_router import RequestRouter
 from src.run_state import ThreadRunStore
 from src.slack_app import SlackConfigError, build_slack_app, handle_app_mention
 from src.thread_context import ThreadContextStore
@@ -50,6 +51,12 @@ def create_app(
     )
     artifact_workflow = ArtifactGenerationWorkflow()
     linear_workflow = LinearIntegrationWorkflow(settings=settings)
+    coordinator = RequestCoordinator(
+        router=RequestRouter(),
+        execution_workflow=execution_workflow,
+        artifact_workflow=artifact_workflow,
+        linear_workflow=linear_workflow,
+    )
 
     try:
         slack_app = build_slack_app(settings)
@@ -58,6 +65,7 @@ def create_app(
 
     if slack_app is not None:
         run_store = ThreadRunStore()
+
         @slack_app.event("app_mention")
         def _on_app_mention(event: Mapping[str, Any], say: Callable[..., Any]) -> None:
             handle_app_mention(
@@ -69,6 +77,7 @@ def create_app(
                 artifact_workflow=artifact_workflow,
                 execution_workflow=execution_workflow,
                 linear_workflow=linear_workflow,
+                coordinator=coordinator,
             )
 
     app = FastAPI(title="piplup-agent-v2", version="0.1.0")
@@ -80,39 +89,13 @@ def create_app(
 
     @app.post("/debug/command")
     def debug_command(command: DebugCommand) -> dict[str, str]:
-        response = execution_workflow.process(
-            channel_id=command.channel_id,
-            thread_ts=command.thread_ts,
-            text=command.text,
-            thread_context=thread_context,
-            agent=agent,
-            defer_missing_confirmation=True,
-        )
-        response = response or linear_workflow.process(
+        _, response = coordinator.process(
             channel_id=command.channel_id,
             thread_ts=command.thread_ts,
             text=command.text,
             thread_context=thread_context,
             agent=agent,
         )
-        response = response or artifact_workflow.process(
-            channel_id=command.channel_id,
-            thread_ts=command.thread_ts,
-            text=command.text,
-            thread_context=thread_context,
-            agent=agent,
-        )
-        if response is None:
-            response = dispatch_command(
-                command.channel_id,
-                command.thread_ts,
-                command.text,
-                thread_context=thread_context,
-                agent=agent,
-            )
-        else:
-            thread_context.append(command.channel_id, command.thread_ts, command.text)
-            thread_context.append(command.channel_id, command.thread_ts, response)
         return {"response": response}
 
     if slack_app is not None:

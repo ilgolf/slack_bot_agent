@@ -35,6 +35,7 @@ _CREATE_MARKERS = ("이슈 생성", "티켓 생성", "이슈 추가", "티켓 �
 _UPDATE_MARKERS = ("이슈 수정", "티켓 수정", "이슈 변경", "티켓 변경", "이슈 업데이트")
 _TEAM_MARKERS = ("팀 조회", "팀 목록", "팀 리스트")
 _ISSUE_MARKERS = ("이슈 조회", "이슈 목록", "티켓 조회", "티켓 목록")
+_PROJECT_WORK_MARKERS = ("프로젝트", "project", "테스트", "test", "pytest", "ruff", "mypy", "코드")
 
 
 class PendingLinearActionStatus(StrEnum):
@@ -86,6 +87,16 @@ class PendingLinearActionStore:
     def cancel(self, channel_id: str, thread_ts: str) -> PendingLinearActionStatus:
         status, _ = self.take(channel_id, thread_ts)
         return status
+
+    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
+        with self._lock:
+            action = self._actions.get((channel_id, thread_ts))
+            if action is None:
+                return False
+            if datetime.now(UTC) - action.created_at > self.ttl:
+                self._actions.pop((channel_id, thread_ts), None)
+                return False
+            return True
 
 
 class LinearIntegrationWorkflow:
@@ -143,6 +154,9 @@ class LinearIntegrationWorkflow:
             logger.warning("linear_request_failed category=%s", type(exc).__name__)
             return f"Linear 작업을 완료하지 못했습니다: {exc}"
         return _help_response()
+
+    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
+        return self.action_store.has_pending(channel_id, thread_ts)
 
     def _tools(self) -> LinearTools:
         if self.tools is None:
@@ -263,6 +277,10 @@ def _run_action(tools: LinearTools, draft: LinearActionDraft) -> LinearIssue:
 
 
 def _is_linear_request(command: str) -> bool:
+    # A project test mentioning its Linear integration is code work, not a request
+    # to access the user's Linear workspace.
+    if _contains(command, _PROJECT_WORK_MARKERS):
+        return False
     return "linear" in command.casefold() and (
         _contains(command, _CONNECTION_MARKERS)
         or _contains(command, _CREATE_MARKERS)

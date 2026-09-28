@@ -49,8 +49,6 @@ class ProjectResolver:
         direct = [path for path in root.iterdir() if path.is_dir() and path.name != "projects"]
         collection = root / "projects"
         nested = (
-            [path for path in collection.iterdir() if path.is_dir()]
-            if collection.is_dir()
-            else []
+            [path for path in collection.iterdir() if path.is_dir()] if collection.is_dir() else []
         )
         return sorted([*direct, *nested], key=lambda path: path.name.casefold())
