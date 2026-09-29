@@ -48,3 +48,31 @@ def test_get_agent_wires_a_thread_trace_store_for_real_deployment() -> None:
 
     assert isinstance(agent, LangChainAnalysisAgent)
     assert isinstance(agent.thread_trace_store, ThreadTraceStore)
+
+
+def test_llm_model_setting_selects_the_openai_model() -> None:
+    settings = Settings(openai_api_key="sk-fake", llm_model="gpt-4o")
+
+    agent = get_agent("openai", settings=settings)
+
+    assert isinstance(agent, LangChainAnalysisAgent)
+    assert agent.chat_model.model_name == "gpt-4o"  # type: ignore[attr-defined]
+
+
+def test_llm_model_setting_selects_the_anthropic_model() -> None:
+    settings = Settings(anthropic_api_key="sk-ant-fake", llm_model="claude-sonnet-4-5")
+
+    agent = get_agent("anthropic", settings=settings)
+
+    assert isinstance(agent, LangChainAnalysisAgent)
+    assert agent.chat_model.model == "claude-sonnet-4-5"  # type: ignore[attr-defined]
+
+
+def test_default_models_are_kept_without_llm_model_setting() -> None:
+    openai_agent = get_agent("openai", settings=Settings(openai_api_key="sk-fake", llm_model=None))
+    anthropic_agent = get_agent(
+        "anthropic", settings=Settings(anthropic_api_key="sk-ant-fake", llm_model=None)
+    )
+
+    assert openai_agent.chat_model.model_name == "gpt-4o-mini"  # type: ignore[attr-defined]
+    assert anthropic_agent.chat_model.model == "claude-3-5-sonnet-latest"  # type: ignore[attr-defined]

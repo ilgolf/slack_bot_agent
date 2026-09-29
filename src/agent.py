@@ -69,7 +69,7 @@ def get_agent(provider: str, *, settings: Settings) -> AnalysisAgent | LangChain
         # doesn't reflect either, hence the ignores.
         anthropic_chat_model = ChatAnthropic(
             api_key=settings.anthropic_api_key,  # type: ignore[arg-type]
-            model="claude-3-5-sonnet-latest",  # type: ignore[call-arg]
+            model=settings.llm_model or "claude-3-5-sonnet-latest",  # type: ignore[call-arg]
         )
         return LangChainAnalysisAgent(
             chat_model=anthropic_chat_model,
@@ -85,7 +85,7 @@ def get_agent(provider: str, *, settings: Settings) -> AnalysisAgent | LangChain
 
         openai_chat_model = ChatOpenAI(
             api_key=settings.openai_api_key,  # type: ignore[arg-type]
-            model="gpt-4o-mini",
+            model=settings.llm_model or "gpt-4o-mini",
         )
         return LangChainAnalysisAgent(
             chat_model=openai_chat_model,

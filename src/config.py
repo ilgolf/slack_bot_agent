@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     # LLM provider for the tool-calling analysis agent (see src.agent.get_agent)
     llm_provider: str = "fake"
+    # Overrides the provider's default chat model (see src.agent.get_agent)
+    llm_model: str | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     agent_max_tool_iterations: int = 16
