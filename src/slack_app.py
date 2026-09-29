@@ -20,6 +20,7 @@ from src.config import Settings
 from src.dispatch import dispatch_command
 from src.execution_workflow import ExecutionWorkflow, SkillRegistry
 from src.linear_workflow import LinearIntegrationWorkflow
+from src.llm_intent_classifier import build_intent_classifier
 from src.observability import request_log_context
 from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
@@ -157,7 +158,7 @@ def start_socket_mode(
         skill_registry=SkillRegistry({"codex": "~/.codex/skills"}),
     )
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=build_intent_classifier(agent)),
         execution_workflow=execution_workflow,
         artifact_workflow=artifact_workflow,
         linear_workflow=linear_workflow,

@@ -10,7 +10,8 @@ from src.dispatch import dispatch_command
 from src.execution_workflow import ExecutionWorkflow
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.request_router import RequestIntent, RequestRouter, RoutedRequest
-from src.thread_context import ThreadContextStore
+from src.run_state import CodeWorkState
+from src.thread_context import ThreadContextStore, ThreadWorkContext
 
 
 @dataclass
@@ -29,7 +30,9 @@ class RequestCoordinator:
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
     ) -> tuple[RoutedRequest, str]:
-        routed = self.router.route(text)
+        routed = self.router.route(
+            text, thread_context=self._thread_work_context(channel_id, thread_ts)
+        )
         if routed.text.casefold() in {"trace 요약", "trace summary"}:
             trace_store = getattr(agent, "thread_trace_store", None)
             trace = trace_store.get(channel_id, thread_ts) if trace_store is not None else None
@@ -49,6 +52,15 @@ class RequestCoordinator:
         thread_context.append(channel_id, thread_ts, text)
         thread_context.append(channel_id, thread_ts, response)
         return routed, response
+
+    def _thread_work_context(self, channel_id: str, thread_ts: str) -> ThreadWorkContext:
+        state = self.execution_workflow.code_work_state_store.state(
+            channel_id=channel_id, thread_ts=thread_ts
+        )
+        return ThreadWorkContext(
+            has_pending_plan=self.execution_workflow.has_pending(channel_id, thread_ts),
+            last_intent_was_code_work=state is not CodeWorkState.IDLE,
+        )
 
     def _route(
         self,
@@ -85,6 +97,7 @@ class RequestCoordinator:
                     text=text,
                     thread_context=thread_context,
                     agent=agent,
+                    trusted_code_work=routed.llm_classified,
                 )
                 or "코드 작업 요청을 이해하지 못했습니다."
             )

@@ -267,6 +267,42 @@ def test_langchain_agent_creates_a_structured_execution_plan(tmp_path: Path) -> 
     assert "삭제·네트워크·의존성 변경" in chat_model.last_input[0].content
 
 
+def test_execution_plan_prompt_protects_plan_md_regardless_of_the_phrasing_used(
+    tmp_path: Path,
+) -> None:
+    """The model's own policy text must not hinge on the single literal
+    phrase "적은 대로" for treating plan.md as read-only — a real production
+    request phrased as "plan.md 보고 코드 구현해" hit this exact gap: the
+    code-level gate protected plan.md, but the model's plan still put it in
+    affected_files (rejected only after the fact), so the request failed
+    outright instead of producing a real code plan. The instruction must
+    name the general rule, with several phrasings as examples, not a single
+    trigger phrase."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    chat_model = RecordingChatModel(
+        '{"goal": "GitHub 연동 구현", "project_name": "my-project", '
+        '"affected_files": ["src/github_client.py"], "steps": [{"action": "write_file", '
+        '"path": "src/github_client.py", "content": "pass"}], '
+        '"verification_commands": [], "risk": "modify"}'
+    )
+    resolver = ProjectResolver(root=tmp_path)
+    agent = LangChainAnalysisAgent(chat_model=chat_model, project_resolver=resolver)
+
+    agent.create_execution_plan(
+        "my-project plan.md 보고 코드 구현해",
+        ProjectContextLoader(resolver).load("my-project", target_paths=["plan.md"]),
+        [],
+        [ExistingFile(relative_path="plan.md", content="# spec")],
+    )
+
+    assert chat_model.last_input is not None
+    prompt = chat_model.last_input[0].content
+    assert "기본적으로 읽기 전용" in prompt
+    for phrasing in ("적은대로", "보고", "기준으로", "확인 후"):
+        assert phrasing in prompt
+
+
 def test_plan_document_request_requires_json_wrapper_around_markdown(tmp_path: Path) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
@@ -675,3 +711,29 @@ def test_langchain_agent_reports_limitation_when_tool_budget_is_exhausted(
     assert result.limitations
     assert "실행한 도구" in result.limitations[0]
     assert result.sources == ["f1.txt", "f2.txt"]
+
+
+def test_execution_plan_uses_the_planning_model_when_configured(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    plan_json = (
+        '{"goal": "구현", "project_name": "my-project", "affected_files": ["src/a.py"], '
+        '"steps": [{"action": "write_file", "path": "src/a.py", "content": "pass"}], '
+        '"verification_commands": [], "risk": "modify"}'
+    )
+    base_model = RecordingChatModel("not json")
+    planning_model = RecordingChatModel(plan_json)
+    resolver = ProjectResolver(root=tmp_path)
+    agent = LangChainAnalysisAgent(
+        chat_model=base_model, planning_model=planning_model, project_resolver=resolver
+    )
+
+    plan = agent.create_execution_plan(
+        "my-project 구현해",
+        ProjectContextLoader(resolver).load("my-project", target_paths=[]),
+        [],
+        [],
+    )
+
+    assert plan.affected_files == ["src/a.py"]
+    assert base_model.last_input is None

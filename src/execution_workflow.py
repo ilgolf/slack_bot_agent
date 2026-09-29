@@ -24,13 +24,21 @@ from threading import Lock
 from typing import Literal, Protocol
 
 from src.agent import PlanResponseFormatError
+from src.code_work_markers import (
+    CODE_INTEGRATION_MARKERS,
+    CODE_MARKERS,
+    CODE_PLANNING_MARKERS,
+    PLAN_CONTINUATION_MARKERS,
+    is_plan_follow_work_request,
+)
+from src.message_text import content_text
 from src.project_resolver import (
     AmbiguousProject,
     InvalidProjectName,
     ProjectResolver,
     UnknownProject,
 )
-from src.request_classifier import classify_request
+from src.request_classifier import classify_request, find_project_name_candidates
 from src.request_router import RequestIntent, RequestRouter
 from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
@@ -47,44 +55,18 @@ _CANCELLATION = re.compile(r"^(취소|취소해줘|취소합니다)$")
 _PATH_IN_REQUEST = re.compile(
     r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?=$|[\s,.:!?…]|[은는이가을를에의])"
 )
+# ExecutionWorkflow's plan-building gate intentionally uses narrower test
+# phrasing than RequestRouter's CODE_MARKERS (bare "테스트"/"test"/"코드" are
+# excluded here) — a pre-existing behavior this shared-vocabulary refactor
+# preserves rather than widens.
+_EXECUTION_EXCLUDED_BROAD_MARKERS = ("테스트", "test", "코드")
+_EXECUTION_ONLY_TEST_MARKERS = ("테스트 실행", "test 실행")
 _EXECUTION_MARKERS = (
-    "수정",
-    "변경",
-    "고쳐",
-    "구현",
-    "리팩터",
-    "리팩토",
-    "추가",
-    "테스트 실행",
-    "test 실행",
-    "pytest",
-    "ruff",
-    "mypy",
-    "린트",
-    "타입 검사",
-    "fix",
-    "implement",
-    "refactor",
-    "update",
-    "run test",
-    "run lint",
-    "typecheck",
-    "작업 plan",
-    "작업 계획",
-    "구현 계획",
-    "plan.md에 적은대로",
-    "plan.md에 적은 대로",
-    "개발 진행",
-    "계획 짜",
-    "plan 짜",
-    "plan 만들어",
-    "설계해",
-    "계획 부터 짜",
-    "계획부터 짜",
-    "github 연동",
-    "gitlab 연동",
-    "api 연동",
-    "연동 작업",
+    tuple(marker for marker in CODE_MARKERS if marker not in _EXECUTION_EXCLUDED_BROAD_MARKERS)
+    + _EXECUTION_ONLY_TEST_MARKERS
+    + CODE_PLANNING_MARKERS
+    + CODE_INTEGRATION_MARKERS
+    + PLAN_CONTINUATION_MARKERS
 )
 _ALLOWED_VERIFICATIONS = ("run_tests", "run_lint", "run_typecheck")
 _MAX_WRITE_BYTES = 1_000_000
@@ -657,6 +639,7 @@ class ExecutionWorkflow:
         thread_context: ThreadContextStore,
         agent: object,
         defer_missing_confirmation: bool = False,
+        trusted_code_work: bool = False,
     ) -> str | None:
         command_text = _SLACK_MENTION.sub("", text).strip()
         if _CONFIRMATION.fullmatch(command_text):
@@ -685,7 +668,8 @@ class ExecutionWorkflow:
         # code-work marker of its own and would otherwise be judged unrelated.
         awaiting_project = self.awaiting_project_store.has_pending(channel_id, thread_ts)
         if (
-            not _is_execution_request(command_text)
+            not trusted_code_work
+            and not _is_execution_request(command_text)
             and not redirect_with_pending_plan
             and not awaiting_project
         ):
@@ -696,7 +680,21 @@ class ExecutionWorkflow:
         contextual_text = self._with_thread_context(
             channel_id, thread_ts, command_text, thread_context
         )
-        project_name = self._project_name(contextual_text)
+        # An explicit project name in this exact message always wins. Only
+        # when this message names none do we fall back to thread history —
+        # and only then can more than one prior project create real
+        # ambiguity worth asking about instead of silently guessing.
+        explicit_project_name = self._project_name(command_text)
+        if explicit_project_name is None:
+            candidates = find_project_name_candidates(contextual_text, self.project_resolver)
+            if len(candidates) > 1:
+                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+                candidate_list = ", ".join(f"`{name}`" for name in candidates)
+                return (
+                    "스레드에 여러 프로젝트가 섞여 있어 대상을 정하지 못했습니다: "
+                    f"{candidate_list}. 진행할 프로젝트명을 알려주세요."
+                )
+        project_name = explicit_project_name or self._project_name(contextual_text)
         if project_name is None:
             self.awaiting_project_store.mark(channel_id, thread_ts)
             return "코드 작업할 대상 프로젝트명을 요청에 포함해 주세요."
@@ -715,7 +713,17 @@ class ExecutionWorkflow:
         # fall back to thread context when this message names nothing at all.
         explicit_target_paths = _PATH_IN_REQUEST.findall(command_text)
         target_paths = explicit_target_paths or _PATH_IN_REQUEST.findall(contextual_text)
-        plan_follow_request = _is_plan_follow_request(command_text)
+        plan_follow_request = _is_plan_follow_request(command_text) or (
+            not explicit_target_paths and _is_plan_follow_request(contextual_text)
+        )
+        # plan.md is already loaded into planning context via `target_paths`
+        # below, so when it's the thing being followed, its own content is
+        # sufficient grounding for a brand-new feature that has no prior
+        # src/tests code to investigate — the model isn't limited to only
+        # modifying what analyze() happened to read.
+        plan_document_is_evidence = plan_follow_request and any(
+            Path(path).name.casefold() == "plan.md" for path in target_paths
+        )
         linear_plan_document = (
             "linear" in command_text.casefold()
             and any(Path(path).name.casefold() == "plan.md" for path in explicit_target_paths)
@@ -750,9 +758,17 @@ class ExecutionWorkflow:
                 for source in getattr(investigation, "sources", [])
                 if isinstance(source, str)
             ]
-            if not source_paths:
+            if not source_paths and not plan_document_is_evidence:
                 self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
-                return "코드 조사 근거 파일을 읽지 못해 실행 계획을 만들 수 없습니다."
+                scope = (
+                    getattr(investigation, "summary", "") or "관련 파일을 찾지 못했습니다"
+                ).rstrip(".")
+                ask = "관련 모듈명 또는 파일을 지정해 주세요."
+                tail = "" if "지정해" in scope else f" {ask}"
+                return (
+                    f"`src/`·`tests/`에서 코드 근거를 찾지 못해 실행 계획을 만들 수 없습니다. "
+                    f"탐색 결과: {scope}.{tail}"
+                )
             # Preserve an explicitly named target first, then add only actual
             # files the investigator read. `_read_existing_files` and the
             # context loader validate each path against the project boundary.
@@ -781,13 +797,44 @@ class ExecutionWorkflow:
                     plan = _create_plan_with_format_retry(
                         creator, contextual_text, context, skills, existing_files
                     )
+            # A model that includes a protected file alongside real changes
+            # (e.g. wanting to note progress in plan.md) shouldn't kill an
+            # otherwise-valid plan — drop the unauthorized step and keep the
+            # rest. `_validate_plan` still guards anything this misses.
+            unauthorized_protected_paths = {
+                path
+                for path in plan.affected_files
+                if _is_protected_meta_path(path) and path not in user_writable_paths
+            }
+            if unauthorized_protected_paths:
+                plan = replace(
+                    plan,
+                    affected_files=[
+                        path
+                        for path in plan.affected_files
+                        if path not in unauthorized_protected_paths
+                    ],
+                    steps=[
+                        step
+                        for step in plan.steps
+                        if step.path not in unauthorized_protected_paths
+                    ],
+                )
+                if not plan.steps:
+                    dropped = ", ".join(
+                        f"`{path}`" for path in sorted(unauthorized_protected_paths)
+                    )
+                    raise ValueError(
+                        "제안된 변경이 프로젝트 관리 파일뿐이라 실행 계획을 만들지 못했습니다: "
+                        f"{dropped}"
+                    )
             _validate_plan(
                 plan,
                 project_name,
                 user_writable_paths,
                 project_root=context.root,
                 evidence_paths=source_paths,
-                require_code_evidence=plan_follow_request,
+                require_code_evidence=plan_follow_request and not plan_document_is_evidence,
                 restrict_new_files_to_code_roots=plan_follow_request,
             )
             if linear_plan_document and not set(plan.affected_files).issubset(
@@ -1273,12 +1320,29 @@ def _skills_for_intent(intent: str) -> tuple[str, ...]:
 
 def _is_execution_request(text: str) -> bool:
     normalized = text.casefold()
-    return any(marker in normalized for marker in _EXECUTION_MARKERS)
+    return is_plan_follow_work_request(normalized) or any(
+        marker in normalized for marker in _EXECUTION_MARKERS
+    )
+
+
+
+# Korean postpositions that mean "based on / according to / following" plan.md
+# — whichever verb comes after them ("구현해줘", "진행해줘", "작업해줘", ...) is
+# unbounded and not worth enumerating, but this small, closed set of relational
+# particles is what actually signals "plan.md is a spec to implement" versus
+# "plan.md is the thing being written to" (e.g. "plan.md 수정해줘", "plan.md에
+# 계획 짜볼래?", both left unprotected, matching direct-edit requests).
+_PLAN_REFERENCE_MARKERS = ("대로", "기준으로", "보고", "따라", "맞춰", "확인 후", "확인하고")
 
 
 def _is_plan_follow_request(text: str) -> bool:
+    """plan.md referenced with a "following/based on" postposition is a
+    read-only spec to implement in code, not a write target — independent of
+    which verb names the implementation work."""
     normalized = text.casefold()
-    return "plan.md에 적은대로" in normalized or "plan.md에 적은 대로" in normalized
+    if "plan.md" not in normalized:
+        return False
+    return any(marker in normalized for marker in _PLAN_REFERENCE_MARKERS)
 
 
 _PROTECTED_META_BASENAMES = {"plan.md", "plan.archive.md", "claude.md", "agents.md"}
@@ -1316,9 +1380,13 @@ def _validate_plan(
         raise ValueError("고위험 작업(의존성·네트워크·삭제·Git push)은 지원하지 않습니다")
     if len(plan.steps) > 20 or len(plan.affected_files) > 20:
         raise ValueError("한 계획에서 변경할 수 있는 파일 수를 초과했습니다")
-    if set(plan.affected_files) != {step.path for step in plan.steps}:
+    step_paths = {step.path for step in plan.steps}
+    if set(plan.affected_files) != step_paths:
+        mismatched = sorted(set(plan.affected_files) ^ step_paths)
+        listed = ", ".join(f"`{path}`" for path in mismatched)
         raise ValueError(
-            "승인 파일 범위 밖 수정이 포함되어 새 계획과 실행 확인이 필요합니다"
+            "승인 파일 범위 밖 수정이 포함되어 새 계획과 실행 확인이 필요합니다 "
+            f"(불일치 파일: {listed})"
         )
     for path in plan.affected_files:
         _project_path(Path("/safe-root"), path)
@@ -1425,7 +1493,7 @@ def _redact_output(output: str) -> str:
 
 def parse_execution_plan(content: object) -> ExecutionPlan:
     """Parse the LLM's strict JSON plan without accepting arbitrary commands."""
-    text = str(content).strip()
+    text = content_text(content).strip()
     fenced = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
     if fenced:
         text = fenced.group(1)

@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 
 from src.code_agent_loop import AgentPlan, PlannerFinal, ToolCall
+from src.message_text import content_text
 from src.tool_registry import ToolOutcome
 
 _FENCED_JSON = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
@@ -68,7 +69,7 @@ class LangChainNextActionPlanner:
 
     @staticmethod
     def _parse_final(content: object) -> PlannerFinal:
-        text = str(content).strip()
+        text = content_text(content).strip()
         fenced = _FENCED_JSON.fullmatch(text)
         if fenced:
             text = fenced.group(1)

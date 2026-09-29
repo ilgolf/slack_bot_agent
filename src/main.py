@@ -22,6 +22,7 @@ from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings, get_settings
 from src.execution_workflow import ExecutionWorkflow, SkillRegistry
 from src.linear_workflow import LinearIntegrationWorkflow
+from src.llm_intent_classifier import build_intent_classifier
 from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
 from src.request_router import RequestRouter
@@ -52,7 +53,7 @@ def create_app(
     artifact_workflow = ArtifactGenerationWorkflow()
     linear_workflow = LinearIntegrationWorkflow(settings=settings)
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=build_intent_classifier(agent)),
         execution_workflow=execution_workflow,
         artifact_workflow=artifact_workflow,
         linear_workflow=linear_workflow,

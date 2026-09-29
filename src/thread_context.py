@@ -6,7 +6,18 @@ without re-fetching the thread from Slack every time (see plan.md's design summa
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class ThreadWorkContext:
+    """A thread's recent code-work state, read by the router to disambiguate
+    a plan-continuation phrase from a plain analysis request."""
+
+    has_pending_plan: bool = False
+    project_name: str | None = None
+    last_intent_was_code_work: bool = False
 
 
 class ThreadContextStore:
