@@ -65,6 +65,8 @@ _CODE_PLANNING_MARKERS = (
     "plan 짜",
     "plan 만들어",
     "설계해",
+    "계획 부터 짜",
+    "계획부터 짜",
 )
 _CODE_INTEGRATION_MARKERS = ("github 연동", "gitlab 연동", "api 연동", "연동 작업")
 _ARTIFACT_MARKERS = ("생성", "만들", "정리", "create", "write", "저장 위치")
@@ -81,6 +83,11 @@ _LINEAR_READ = (
     "티켓 목록",
 )
 _SYSTEM_MARKERS = ("mcp 연동", "mcp 연결", "mcp 가능한", "mcp 지원")
+_PROJECT_CODE_CONTEXT = (
+    "project", "프로젝트", "코드", "src/", "tests/", ".py", "pytest", "test",
+    "plan.md", "개발", "구현", "연동 작업",
+)
+_INQUIRY_MARKERS = ("?", "？", "기반", "학습", "설계한", "설계됐", "지원", "가능")
 
 
 class RequestRouter:
@@ -93,6 +100,7 @@ class RequestRouter:
     def route(self, text: str, *, project_name: str | None = None) -> RoutedRequest:
         command = _MENTION.sub("", text).strip()
         normalized = command.casefold()
+        command_line = normalized.splitlines()[0] if normalized else ""
         confirmation = _CONFIRM.fullmatch(command)
         if confirmation:
             return RoutedRequest(
@@ -104,20 +112,43 @@ class RequestRouter:
         if _CANCEL.fullmatch(command):
             return RoutedRequest(RequestIntent.CONTROL_CANCEL, command, project_name, "취소")
 
-        # Project/code verbs always win over a product/domain word such as Linear.
+        # The first line carries the command; later lines can be ticket fields
+        # whose title or description happen to contain code-work vocabulary.
+        if _starts_with_linear_command(command_line, _LINEAR_CREATE + _LINEAR_UPDATE):
+            if any(marker in command_line for marker in ("가능", "지원", "어떻게")):
+                return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
+            return RoutedRequest(RequestIntent.LINEAR_MUTATION, command, project_name)
+        if _starts_with_linear_command(command_line, _LINEAR_READ):
+            return RoutedRequest(RequestIntent.LINEAR_READ, command, project_name)
+        if (
+            "linear" in command_line
+            and any(marker in command_line for marker in _PROJECT_CODE_CONTEXT)
+            and any(marker in command_line for marker in _CODE_MARKERS + _CODE_PLANNING_MARKERS)
+            and not any(marker in command_line for marker in ("가능", "지원", "학습", "기반"))
+        ):
+            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
+        if ("linear" in command_line or "graphql" in command_line) and any(
+            marker in command_line for marker in _INQUIRY_MARKERS
+        ):
+            return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
+        if any(marker in command_line for marker in _CODE_INTEGRATION_MARKERS) or (
+            "linear" in command_line
+            and any(marker in command_line for marker in _PROJECT_CODE_CONTEXT)
+        ):
+            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
         if any(
             marker in normalized
             for marker in _CODE_MARKERS + _CODE_PLANNING_MARKERS + _CODE_INTEGRATION_MARKERS
         ):
             return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
         if "linear" in normalized:
-            if any(marker in normalized for marker in _LINEAR_CREATE + _LINEAR_UPDATE):
-                return RoutedRequest(RequestIntent.LINEAR_MUTATION, command, project_name)
-            if any(marker in normalized for marker in _LINEAR_READ):
-                return RoutedRequest(RequestIntent.LINEAR_READ, command, project_name)
             return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
         if any(marker in normalized for marker in _ARTIFACT_MARKERS):
             return RoutedRequest(RequestIntent.ARTIFACT_GENERATION, command, project_name)
         if any(marker in normalized for marker in _SYSTEM_MARKERS):
             return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
         return RoutedRequest(RequestIntent.PROJECT_ANALYSIS, command, project_name)
+
+
+def _starts_with_linear_command(command_line: str, markers: tuple[str, ...]) -> bool:
+    return any(command_line.startswith(f"linear {marker}") for marker in markers)

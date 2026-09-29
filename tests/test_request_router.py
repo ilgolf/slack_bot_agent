@@ -51,3 +51,36 @@ def test_ambiguous_linear_integration_question_stays_outside_linear_api() -> Non
     routed = RequestRouter().route("Linear ticket mcp 연동 가능한지 확인해줄래?")
 
     assert routed.intent is RequestIntent.SYSTEM_INQUIRY
+
+
+def test_linear_design_questions_are_inquiries_not_code_work() -> None:
+    router = RequestRouter()
+
+    assert router.route("Linear는 GraphQL 기반으로 설계한 거야?").intent is (
+        RequestIntent.SYSTEM_INQUIRY
+    )
+    assert router.route("GraphQL 기반이야?").intent is RequestIntent.SYSTEM_INQUIRY
+    assert router.route("Linear에 대한 학습은 충분해?").intent is RequestIntent.SYSTEM_INQUIRY
+
+
+def test_linear_workspace_mutation_is_not_claimed_by_generic_code_verbs() -> None:
+    router = RequestRouter()
+
+    assert router.route("Linear 이슈 수정 ENG-123").intent is RequestIntent.LINEAR_MUTATION
+    assert router.route("my-project Linear 연동 코드 수정해줘").intent is RequestIntent.CODE_WORK
+    assert router.route("Linear 이슈 생성\n팀 ID: x\n제목: 코드 수정").intent is (
+        RequestIntent.LINEAR_MUTATION
+    )
+    assert router.route("Linear API 연동 가능한가?").intent is RequestIntent.SYSTEM_INQUIRY
+    assert router.route("Linear 연동 작업에서 이슈 생성 코드를 구현해줘").intent is (
+        RequestIntent.CODE_WORK
+    )
+
+
+def test_question_form_plan_document_request_is_code_work() -> None:
+    routed = RequestRouter().route(
+        "slack_bot_agent 프로젝트에 Linear 연동 작업을 진행할건데 "
+        "plan.md 에 계획 부터 짜볼래?"
+    )
+
+    assert routed.intent is RequestIntent.CODE_WORK

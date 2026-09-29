@@ -24,11 +24,14 @@ def dispatch_command(
     thread_context: ThreadContextStore,
     agent: AnalysisAgent,
     record_context: bool = True,
+    linear_api_key_configured: bool | None = None,
 ) -> str:
     if not text.strip():
         return ""
 
-    system_response = answer_system_inquiry(text)
+    system_response = answer_system_inquiry(
+        text, linear_api_key_configured=linear_api_key_configured
+    )
     if system_response is not None:
         if record_context:
             thread_context.append(channel_id, thread_ts, text)

@@ -15,6 +15,12 @@ class RequestKind(StrEnum):
     GENERAL_ANALYSIS = "general_analysis"
 
 
+_EXPLICIT_PROJECT = re.compile(
+    r"(?<![\w./-])([\w.-]+)\s+(?:프로젝트|project)(?=$|[에은는을를의]|\W)", re.I
+)
+_DEICTIC_PROJECTS = frozenset({"이", "그", "저", "현재", "해당", "우리", "this", "the"})
+
+
 @dataclass(frozen=True)
 class AnalysisRequest:
     """A user request with the project inferred from its current thread context."""
@@ -33,7 +39,9 @@ def classify_request(question: str, project_resolver: ProjectResolver) -> Analys
     project_names = sorted(
         (path.name for path in project_resolver.project_directories()), key=len, reverse=True
     )
-    project_name = _find_project_name(current_message, project_names)
+    project_name = _explicit_project_name(current_message) or _find_project_name(
+        current_message, project_names
+    )
     if project_name is None:
         project_name = _find_project_name(question, project_names)
     normalized_question = current_message.casefold()
@@ -70,6 +78,13 @@ def classify_request(question: str, project_resolver: ProjectResolver) -> Analys
 def _find_project_name(text: str, project_names: list[str]) -> str | None:
     normalized_text = text.casefold()
     return next((name for name in project_names if name.casefold() in normalized_text), None)
+
+
+def _explicit_project_name(text: str) -> str | None:
+    match = _EXPLICIT_PROJECT.search(text)
+    if match is None or match.group(1).casefold() in _DEICTIC_PROJECTS:
+        return None
+    return match.group(1)
 
 
 def _split_thread_context(question: str) -> tuple[str, str]:

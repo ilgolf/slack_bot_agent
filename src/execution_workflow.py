@@ -15,7 +15,7 @@ import logging
 import re
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -23,8 +23,15 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal, Protocol
 
-from src.project_resolver import InvalidProjectName, ProjectResolver, UnknownProject
+from src.agent import PlanResponseFormatError
+from src.project_resolver import (
+    AmbiguousProject,
+    InvalidProjectName,
+    ProjectResolver,
+    UnknownProject,
+)
 from src.request_classifier import classify_request
+from src.request_router import RequestIntent, RequestRouter
 from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
 from src.tool_policy import ToolCategory
@@ -72,6 +79,8 @@ _EXECUTION_MARKERS = (
     "plan 짜",
     "plan 만들어",
     "설계해",
+    "계획 부터 짜",
+    "계획부터 짜",
     "github 연동",
     "gitlab 연동",
     "api 연동",
@@ -563,6 +572,47 @@ class ProjectExecutionTools:
         )
 
 
+def _create_plan_with_format_retry(
+    creator: Callable[..., ExecutionPlan],
+    request: str,
+    context: ProjectContext,
+    skills: list[AppliedSkill],
+    existing_files: list[ExistingFile],
+) -> ExecutionPlan:
+    try:
+        return creator(request, context, skills, existing_files)
+    except PlanResponseFormatError:
+        logger.warning("execution_plan_format_retry project=%s attempt=1", context.project_name)
+        retry_request = (
+            f"{request}\n\n형식 교정: 직전 응답은 실행 계획 JSON으로 파싱되지 않았습니다. "
+            "설명이나 Markdown 코드 블록 없이 goal, project_name, affected_files, "
+            "steps, verification_commands, risk 필드를 가진 JSON 객체 하나만 반환하세요. "
+            "plan.md 본문은 steps[].content 문자열에 넣으세요."
+        )
+        return creator(retry_request, context, skills, existing_files)
+
+
+def _linear_planning_sources(root: Path) -> list[str]:
+    """Select a small read-only sample of existing Linear implementation and tests."""
+    paths: list[str] = []
+    total_bytes = 0
+    for folder_name in ("src", "tests"):
+        folder = root / folder_name
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("**/*linear*.py")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            size = path.stat().st_size
+            if size > 16_000 or total_bytes + size > 48_000:
+                continue
+            paths.append(str(path.relative_to(root)))
+            total_bytes += size
+            if len(paths) == 4:
+                return paths
+    return paths
+
+
 def _read_existing_files(root: Path, target_paths: list[str]) -> list[ExistingFile]:
     """Read each candidate target path with the same bounded validation as the
     execution tools; a missing or invalid path becomes `content=None` rather
@@ -619,6 +669,12 @@ class ExecutionWorkflow:
             if defer_missing_confirmation and cancellation_response is None:
                 return None
             return cancellation_response
+        if RequestRouter().route(command_text).intent in {
+            RequestIntent.SYSTEM_INQUIRY,
+            RequestIntent.LINEAR_READ,
+            RequestIntent.LINEAR_MUTATION,
+        }:
+            return None
         # A thread with a plan already pending can be redirected by naming a
         # different file alone — no modification verb required. Without a
         # pending plan, a bare file mention still isn't an execution request.
@@ -660,6 +716,11 @@ class ExecutionWorkflow:
         explicit_target_paths = _PATH_IN_REQUEST.findall(command_text)
         target_paths = explicit_target_paths or _PATH_IN_REQUEST.findall(contextual_text)
         plan_follow_request = _is_plan_follow_request(command_text)
+        linear_plan_document = (
+            "linear" in command_text.casefold()
+            and any(Path(path).name.casefold() == "plan.md" for path in explicit_target_paths)
+            and not plan_follow_request
+        )
         # "Follow plan.md" names the file as a read-only specification, not
         # as a requested write target.  Keep it in planning context, but do
         # not let that wording authorize the model to overwrite it.
@@ -677,7 +738,10 @@ class ExecutionWorkflow:
         # Following an existing plan is different: the plan is specification,
         # not implementation evidence, so related source and test files must
         # still be investigated before the model can propose a code change.
-        if callable(investigator) and (not explicit_target_paths or plan_follow_request):
+        investigate_code = any(_is_source_or_test_path(path) for path in explicit_target_paths)
+        if callable(investigator) and (
+            not explicit_target_paths or plan_follow_request or investigate_code
+        ):
             investigation = investigator(
                 contextual_text, channel_id=channel_id, thread_ts=thread_ts
             )
@@ -694,10 +758,16 @@ class ExecutionWorkflow:
             # context loader validate each path against the project boundary.
             target_paths = list(dict.fromkeys([*target_paths, *source_paths]))
         try:
+            if linear_plan_document:
+                project_root = self.project_resolver.resolve(project_name)
+                related_paths = _linear_planning_sources(project_root)
+                target_paths = list(dict.fromkeys([*target_paths, *related_paths]))
             context = self.context_loader.load(project_name, target_paths=target_paths)
             skills = self.skill_registry.select(intent=command_text, project_root=context.root)
             existing_files = _read_existing_files(context.root, target_paths)
-            plan = creator(contextual_text, context, skills, existing_files)
+            plan = _create_plan_with_format_retry(
+                creator, contextual_text, context, skills, existing_files
+            )
             if not target_paths and plan.affected_files:
                 # No file was named, so the model proposed one itself while
                 # planning. Re-read whatever it picked and ask again so an
@@ -708,7 +778,9 @@ class ExecutionWorkflow:
                     context = self.context_loader.load(
                         project_name, target_paths=plan.affected_files
                     )
-                    plan = creator(contextual_text, context, skills, existing_files)
+                    plan = _create_plan_with_format_retry(
+                        creator, contextual_text, context, skills, existing_files
+                    )
             _validate_plan(
                 plan,
                 project_name,
@@ -718,12 +790,26 @@ class ExecutionWorkflow:
                 require_code_evidence=plan_follow_request,
                 restrict_new_files_to_code_roots=plan_follow_request,
             )
+            if linear_plan_document and not set(plan.affected_files).issubset(
+                set(user_writable_paths)
+            ):
+                raise ValueError("계획 문서 요청은 명시한 plan.md만 변경할 수 있습니다")
             detailed_context = self.context_loader.load(
                 project_name, target_paths=plan.affected_files
             )
+        except AmbiguousProject:
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+            return "같은 Git 저장소 이름의 로컬 프로젝트가 여러 개입니다. 폴더명을 지정해 주세요."
         except (InvalidProjectName, UnknownProject):
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return "대상 프로젝트를 찾을 수 없습니다."
+        except PlanResponseFormatError:
+            logger.warning("execution_plan_format_failed project=%s attempts=2", project_name)
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+            return (
+                "모델이 두 번 연속 실행 계획 JSON을 올바르게 반환하지 못했습니다. "
+                "파일은 변경하지 않았습니다. 요청을 더 짧게 나누어 다시 시도해 주세요."
+            )
         except (OSError, ValueError) as exc:
             logger.warning("execution_plan_rejected project=%s reason=%s", project_name, exc)
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
@@ -755,7 +841,12 @@ class ExecutionWorkflow:
             plan.applied_skills,
         )
         diffs = _preview_diffs(detailed_context.root, plan.steps)
-        return render_plan_preview(plan, detailed_context.git, diffs)
+        evidence_paths = [
+            item.relative_path for item in existing_files if item.content is not None
+        ]
+        return render_plan_preview(
+            plan, detailed_context.git, diffs, evidence_paths=evidence_paths
+        )
 
     def has_pending(self, channel_id: str, thread_ts: str) -> bool:
         return self.plan_store.has_pending(channel_id, thread_ts)
@@ -1024,12 +1115,14 @@ def render_plan_preview(
     diffs: list[tuple[str, str]] | None = None,
     *,
     max_auto_repairs: int = DEFAULT_MAX_AUTO_REPAIRS,
+    evidence_paths: Sequence[str] = (),
 ) -> str:
     instructions = ", ".join(f"`{item}`" for item in plan.applied_agents) or "없음"
     skills = ", ".join(f"`{item}`" for item in plan.applied_skills) or "없음"
     files = "\n".join(f"- `{path}`" for path in plan.affected_files) or "- 파일 변경 없음"
     steps = "\n".join(f"- `{step.path}` 작성" for step in plan.steps) or "- 파일 변경 없음"
     checks = ", ".join(plan.verification_commands) or "없음"
+    evidence = ", ".join(f"`{path}`" for path in evidence_paths) or "없음"
     git_summary = (
         "Git 저장소 아님" if not git.is_repository else f"기존 변경 {len(git.changed_files)}개"
     )
@@ -1046,7 +1139,8 @@ def render_plan_preview(
         f"목표: {plan.goal}\n프로젝트: `{plan.project_name}` ({git_summary})\n"
         f"위험도: `{plan.risk}`\n승인 파일 범위:\n{files}\n실행 단계:\n{steps}\n"
         f"변경 미리보기:\n{diff_sections}\n"
-        f"고정 검증 명령: {checks}\n자동 복구 예산: 최대 {max_auto_repairs}회\n"
+        f"조사 근거: {evidence}\n고정 검증 명령: {checks}\n"
+        f"자동 복구 예산: 최대 {max_auto_repairs}회\n"
         "미지원 작업: 임의 셸·HTTP·패키지 설치/삭제·rename·Git commit/push\n"
         "남은 위험: 검증은 승인 후에만 실행되며, 환경 의존 오류가 발생할 수 있습니다.\n"
         f"적용 AGENTS.md: {instructions}\n적용 Skill: {skills}\n\n"
@@ -1232,11 +1326,11 @@ def _validate_plan(
             restrict_new_files_to_code_roots
             and project_root is not None
             and not _project_path(project_root, path).exists()
+            and not _is_source_or_test_path(path)
         ):
-            if not _is_source_or_test_path(path):
-                raise ValueError(
-                    f"새 파일 `{path}`은 `src/` 또는 `tests/` 아래에 만들어야 합니다"
-                )
+            raise ValueError(
+                f"새 파일 `{path}`은 `src/` 또는 `tests/` 아래에 만들어야 합니다"
+            )
     if require_code_evidence and not any(_is_source_or_test_path(path) for path in evidence_paths):
         raise ValueError(
             "plan.md 실행에는 기존 `src/` 또는 `tests/` 파일을 읽은 구현 근거가 필요합니다"

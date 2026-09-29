@@ -44,10 +44,23 @@ Notion Domain Documentation
 | ------------------- | ----------------------- | --------------------------------------------------------------------- |
 | Agent Orchestration | LangGraph               | Agent routing, handoff, retry loop, workflow orchestration            |
 | LLM Tool Chain      | LangChain               | LLM invocation, tool binding, structured output, tool execution chain |
-| Linear Agent        | Linear API / MCP        | Ticket 조회, 생성, 수정, 상태 업데이트                                            |
+| Linear Agent        | Linear GraphQL API      | 현재 팀·이슈 조회 및 이슈 생성·수정; 상태 변경은 이슈 수정에 포함                         |
 | Code Agent          | Code Tool / Shell / Git | Repository 분석, Planning, 구현, 테스트, 정적 분석                               |
 | Notion Agent        | Notion API / MCP        | 완료 보고 분석, Domain Document 생성 및 수정                                     |
 | Interface           | Slack Bot               | 사용자 요청 입력, 진행 상황 공유, 결과 전달                                            |
+
+현재 구현에서는 Linear MCP 서버가 연결되어 있지 않습니다. `LINEAR_API_KEY`가 있으면
+`https://api.linear.app/graphql`의 고정 query/mutation으로 팀·이슈를 조회하고 이슈를
+생성·수정할 수 있습니다. Linear 설계나 지원 범위 질문은 API를 호출하지 않고 현재
+지원 기능을 답합니다. 이슈 변경은 미리보기 후 같은 Slack 스레드에서 `실행` 확인을
+받아 적용합니다.
+
+코드 작업은 관련 구현·테스트를 읽은 뒤 계획과 diff를 미리 보여줍니다. 보류 중인
+계획이 있어도 설계 질문은 질문으로 처리하며, 기존 계획은 명시적인 `실행` 또는
+`취소`까지 유지됩니다. 아래의 전체 Linear → Code → Notion 흐름은 목표 아키텍처입니다.
+프로젝트명에는 로컬 폴더명이나, 로컬 체크아웃 한 곳에만 대응하는 Git `origin`
+저장소 이름을 사용할 수 있습니다. 예를 들어 `slack_bot_agent`는 로컬
+`piplup-agent-v2` 폴더를 가리킵니다.
 
 
 ---

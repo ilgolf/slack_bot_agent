@@ -279,15 +279,14 @@ def _run_action(tools: LinearTools, draft: LinearActionDraft) -> LinearIssue:
 def _is_linear_request(command: str) -> bool:
     # A project test mentioning its Linear integration is code work, not a request
     # to access the user's Linear workspace.
-    if _contains(command, _PROJECT_WORK_MARKERS):
+    command_line = command.splitlines()[0] if command else ""
+    if "linear" not in command_line.casefold():
         return False
-    return "linear" in command.casefold() and (
-        _contains(command, _CONNECTION_MARKERS)
-        or _contains(command, _CREATE_MARKERS)
-        or _contains(command, _UPDATE_MARKERS)
-        or _contains(command, _TEAM_MARKERS)
-        or _contains(command, _ISSUE_MARKERS)
-    )
+    if _contains(command_line, _CREATE_MARKERS + _UPDATE_MARKERS + _TEAM_MARKERS + _ISSUE_MARKERS):
+        return True
+    if _contains(command_line, _PROJECT_WORK_MARKERS):
+        return False
+    return _contains(command_line, _CONNECTION_MARKERS)
 
 
 def _is_connection_request(command: str) -> bool:

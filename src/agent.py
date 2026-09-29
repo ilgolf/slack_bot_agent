@@ -24,6 +24,10 @@ class AnalysisAgentError(Exception):
     catch one error type regardless of which agent raised it."""
 
 
+class PlanResponseFormatError(AnalysisAgentError):
+    """The model response could not be parsed as a bounded execution plan."""
+
+
 @dataclass(frozen=True)
 class AnalysisResult:
     summary: str

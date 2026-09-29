@@ -110,12 +110,26 @@ class RequestCoordinator:
                 )
                 or "지원되는 Linear 작업을 지정해 주세요."
             )
+        if routed.intent is RequestIntent.SYSTEM_INQUIRY:
+            return dispatch_command(
+                channel_id,
+                thread_ts,
+                text,
+                thread_context=thread_context,
+                agent=agent,
+                record_context=False,
+                linear_api_key_configured=bool(self.linear_workflow.settings.linear_api_key),
+            )
         # Nothing else claimed this message. A thread with an open code-work
         # conversation — a pending plan, or a request stalled only for a
         # project name — gets one more chance to recognize this message
         # (a clarification, or the missing project name) before falling back
         # to analysis.
-        if self.execution_workflow.has_open_conversation(channel_id, thread_ts):
+        if (
+            self.execution_workflow.has_open_conversation(channel_id, thread_ts)
+            and "?" not in routed.text
+            and "？" not in routed.text
+        ):
             clarification = self.execution_workflow.process(
                 channel_id=channel_id,
                 thread_ts=thread_ts,

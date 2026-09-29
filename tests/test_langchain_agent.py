@@ -16,7 +16,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
-from src.agent import AnalysisResult
+from src.agent import AnalysisResult, PlanResponseFormatError
 from src.code_agent_loop import AgentPlan, ToolCall
 from src.code_agent_planner import LangChainNextActionPlanner
 from src.execution_workflow import ExistingFile, ProjectContextLoader
@@ -267,6 +267,26 @@ def test_langchain_agent_creates_a_structured_execution_plan(tmp_path: Path) -> 
     assert "삭제·네트워크·의존성 변경" in chat_model.last_input[0].content
 
 
+def test_plan_document_request_requires_json_wrapper_around_markdown(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    chat_model = RecordingChatModel("# Linear 연동 계획\n")
+    resolver = ProjectResolver(root=tmp_path)
+    agent = LangChainAnalysisAgent(chat_model=chat_model, project_resolver=resolver)
+
+    with pytest.raises(PlanResponseFormatError):
+        agent.create_execution_plan(
+            "my-project에 Linear 연동 작업을 진행할건데 plan.md 에 계획 부터 짜볼래?",
+            ProjectContextLoader(resolver).load("my-project", target_paths=["plan.md"]),
+            [],
+            [ExistingFile(relative_path="plan.md", content=None)],
+        )
+
+    assert chat_model.last_input is not None
+    assert "plan.md를 변경 대상으로" in chat_model.last_input[0].content
+    assert "steps의 content 문자열" in chat_model.last_input[0].content
+
+
 def test_langchain_agent_execution_plan_prompt_includes_existing_file_content(
     tmp_path: Path,
 ) -> None:
@@ -299,6 +319,33 @@ def test_langchain_agent_execution_plan_prompt_includes_existing_file_content(
     assert "very unique existing content 12345" in prompt
     assert "new_feature.py" in prompt
     assert "새 파일, 아직 존재하지 않음" in prompt
+
+
+def test_linear_code_plan_prompt_uses_supported_graphql_capability(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    chat_model = RecordingChatModel(
+        '{"goal": "Linear 연동", "project_name": "my-project", '
+        '"affected_files": ["src/linear.py"], "steps": [{"action": "write_file", '
+        '"path": "src/linear.py", "content": "pass"}], '
+        '"verification_commands": [], "risk": "modify"}'
+    )
+    resolver = ProjectResolver(root=tmp_path)
+    agent = LangChainAnalysisAgent(chat_model=chat_model, project_resolver=resolver)
+
+    agent.create_execution_plan(
+        "my-project Linear 연동 코드를 구현해줘",
+        ProjectContextLoader(resolver).load("my-project"),
+        [],
+        [],
+    )
+
+    assert chat_model.last_input is not None
+    prompt = chat_model.last_input[0].content
+    assert "https://api.linear.app/graphql" in prompt
+    assert "list_teams" in prompt
+    assert "create_issue" in prompt
+    assert "REST endpoint를 가정하지 마세요" in prompt
 
 
 def test_langchain_agent_summarizes_only_the_named_file(tmp_path: Path) -> None:

@@ -38,6 +38,17 @@ def test_classify_request_prefers_project_in_current_message(tmp_path: Path) -> 
     assert request.project_name == "new-project"
 
 
+def test_explicit_unknown_project_does_not_inherit_old_thread_project(tmp_path: Path) -> None:
+    (tmp_path / "old-project").mkdir()
+    request = classify_request(
+        "스레드 맥락:\nold-project을 분석해줘\n현재 요청:\n"
+        "slack_bot_agent 프로젝트에 plan.md 에 계획 부터 짜볼래?",
+        ProjectResolver(root=tmp_path),
+    )
+
+    assert request.project_name == "slack_bot_agent"
+
+
 def test_classify_request_finds_project_under_orca_projects_collection(tmp_path: Path) -> None:
     (tmp_path / "projects" / "my-project").mkdir(parents=True)
 

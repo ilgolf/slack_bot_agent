@@ -132,6 +132,17 @@ def test_create_is_previewed_then_executed_once() -> None:
     assert operations == ["create_issue"]
 
 
+def test_ticket_title_with_code_word_is_still_a_linear_mutation() -> None:
+    workflow, operations = _workflow()
+
+    preview = _process(workflow, "Linear 이슈 생성\n팀 ID: team-1\n제목: 코드 수정")
+
+    assert preview is not None and "초안" in preview
+    assert operations == []
+    assert "ENG-123" in (_process(workflow, "실행") or "")
+    assert operations == ["create_issue"]
+
+
 def test_update_reads_target_for_preview_then_mutates_on_confirmation() -> None:
     workflow, operations = _workflow()
 

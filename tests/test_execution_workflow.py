@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from src.agent import AnalysisResult
+from src.agent import AnalysisResult, PlanResponseFormatError
 from src.execution_workflow import (
     CommandResult,
     ExecutionPlan,
@@ -213,6 +213,140 @@ def test_workflow_reads_target_file_content_before_creating_plan(tmp_path: Path)
     assert agent.received_existing_files is not None
     contents = {item.relative_path: item.content for item in agent.received_existing_files}
     assert contents == {"README.md": "before\n"}
+
+
+def test_plan_document_request_retries_malformed_model_response_once(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+
+    class RetryAgent(PlanningAgent):
+        def create_execution_plan(
+            self, request: str, context: object, skills: object,
+            existing_files: list[ExistingFile],
+        ) -> ExecutionPlan:
+            self.calls += 1
+            self.received_request = request
+            if self.calls == 1:
+                raise PlanResponseFormatError("모델 응답이 유효한 실행 계획 형식이 아닙니다")
+            return self.plan
+
+    plan = ExecutionPlan(
+        goal="Linear 연동 계획", project_name="my-project", affected_files=["plan.md"],
+        steps=[ExecutionStep(action="write_file", path="plan.md", content="# Linear 계획\n")],
+        verification_commands=[], risk=ExecutionRisk.MODIFY,
+    )
+    agent = RetryAgent(plan)
+    workflow = _workflow(tmp_path)
+
+    preview = workflow.process(
+        channel_id="C1", thread_ts="1.1",
+        text="my-project에 Linear 연동 작업을 진행할건데 plan.md 에 계획 부터 짜볼래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"), agent=agent,
+    )
+
+    assert preview is not None and "코드 실행 계획" in preview
+    assert agent.calls == 2
+    assert agent.received_request is not None and "형식 교정" in agent.received_request
+    assert not (project / "plan.md").exists()
+    assert workflow.has_pending("C1", "1.1")
+
+
+def test_plan_document_request_stops_after_two_malformed_responses(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+
+    class InvalidAgent:
+        calls = 0
+
+        def create_execution_plan(
+            self, request: str, context: object, skills: object,
+            existing_files: list[ExistingFile],
+        ) -> ExecutionPlan:
+            self.calls += 1
+            raise PlanResponseFormatError("모델 응답이 유효한 실행 계획 형식이 아닙니다")
+
+    agent = InvalidAgent()
+    workflow = _workflow(tmp_path)
+    result = workflow.process(
+        channel_id="C1", thread_ts="1.1",
+        text="my-project에 Linear 연동 작업을 진행할건데 plan.md 에 계획 부터 짜볼래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"), agent=agent,
+    )
+
+    assert result is not None and "두 번 연속" in result
+    assert agent.calls == 2
+    assert not workflow.has_pending("C1", "1.1")
+    assert not (project / "plan.md").exists()
+
+
+def test_linear_plan_document_reads_existing_implementation_and_tests(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    (project / "src").mkdir(parents=True)
+    (project / "tests").mkdir()
+    (project / "plan.md").write_text("# Old plan\n")
+    (project / "src" / "linear_client.py").write_text("GRAPHQL_ENDPOINT = 'graphql'\n")
+    (project / "tests" / "test_linear_client.py").write_text("def test_graphql(): pass\n")
+    plan = ExecutionPlan(
+        goal="Linear 계획", project_name="my-project", affected_files=["plan.md"],
+        steps=[ExecutionStep(action="write_file", path="plan.md", content="# New plan\n")],
+        verification_commands=[], risk=ExecutionRisk.MODIFY,
+    )
+    agent = PlanningAgent(plan)
+
+    preview = _workflow(tmp_path).process(
+        channel_id="C1", thread_ts="1.1",
+        text="my-project에 Linear 연동 작업을 진행할건데 plan.md 에 계획 부터 짜볼래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"), agent=agent,
+    )
+
+    assert preview is not None and "코드 실행 계획" in preview
+    assert agent.received_existing_files is not None
+    assert [item.relative_path for item in agent.received_existing_files] == [
+        "plan.md", "src/linear_client.py", "tests/test_linear_client.py",
+    ]
+    assert "`src/linear_client.py`" in preview
+
+
+def test_linear_plan_document_cannot_add_unrequested_code_files(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    plan = ExecutionPlan(
+        goal="Linear 계획", project_name="my-project",
+        affected_files=["plan.md", "src/new_linear.py"],
+        steps=[
+            ExecutionStep(action="write_file", path="plan.md", content="# New plan\n"),
+            ExecutionStep(action="write_file", path="src/new_linear.py", content="pass\n"),
+        ],
+        verification_commands=[], risk=ExecutionRisk.MODIFY,
+    )
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1", thread_ts="1.1",
+        text="my-project에 Linear 연동 작업을 진행할건데 plan.md 에 계획 부터 짜볼래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"), agent=PlanningAgent(plan),
+    )
+
+    assert result is not None and "명시한 plan.md만" in result
+    assert not workflow.has_pending("C1", "1.1")
+
+
+def test_unknown_named_project_does_not_plan_against_previous_project(tmp_path: Path) -> None:
+    old_project = tmp_path / "old-project"
+    old_project.mkdir()
+    context = ThreadContextStore(root=tmp_path / "context")
+    context.append("C1", "1.1", "old-project 관련 작업")
+    agent = PlanningAgent(_plan())
+
+    result = _workflow(tmp_path).process(
+        channel_id="C1", thread_ts="1.1",
+        text="slack_bot_agent 프로젝트에 Linear 연동 작업 plan.md 에 계획 부터 짜볼래?",
+        thread_context=context, agent=agent,
+    )
+
+    assert result == "대상 프로젝트를 찾을 수 없습니다."
+    assert agent.calls == 0
+    assert not (old_project / "plan.md").exists()
 
 
 def test_workflow_transitions_from_discovery_to_awaiting_confirmation(tmp_path: Path) -> None:
@@ -700,6 +834,34 @@ def test_workflow_grounds_a_general_code_plan_in_agent_read_sources(tmp_path: Pa
     ]
 
 
+def test_explicit_code_target_still_investigates_related_sources(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    source = project / "src" / "auth.py"
+    related_test = project / "tests" / "test_auth.py"
+    source.parent.mkdir(parents=True)
+    related_test.parent.mkdir(parents=True)
+    source.write_text("def authenticate():\n    return True\n")
+    related_test.write_text("def test_authenticate():\n    assert True\n")
+    plan = ExecutionPlan(
+        goal="인증 변경", project_name="my-project", affected_files=["src/auth.py"],
+        steps=[ExecutionStep(action="write_file", path="src/auth.py", content="changed\n")],
+        verification_commands=[], risk=ExecutionRisk.MODIFY,
+    )
+    agent = InvestigatingPlanningAgent(plan, sources=["src/auth.py", "tests/test_auth.py"])
+
+    result = _workflow(tmp_path).process(
+        channel_id="C1", thread_ts="1.1", text="my-project src/auth.py 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"), agent=agent,
+    )
+
+    assert result is not None and "코드 실행 계획" in result
+    assert agent.questions == ["my-project src/auth.py 수정해줘"]
+    assert agent.received_existing_files == [
+        ExistingFile(relative_path="src/auth.py", content=source.read_text()),
+        ExistingFile(relative_path="tests/test_auth.py", content=related_test.read_text()),
+    ]
+
+
 def test_explicit_file_plan_does_not_require_exploration_sources(tmp_path: Path) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
@@ -921,6 +1083,26 @@ def test_workflow_asks_for_clarification_on_ambiguous_message_with_pending_plan(
     assert "README.md" in result
     assert "실행" in result
     assert workflow.has_pending("C1", "1.1")
+
+
+def test_pending_code_plan_does_not_intercept_linear_design_question(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = PlanningAgent(_plan())
+    workflow.process(
+        channel_id="C1", thread_ts="1.1", text="my-project README.md 수정해줘",
+        thread_context=context, agent=agent,
+    )
+
+    assert workflow.process(
+        channel_id="C1", thread_ts="1.1", text="Linear GraphQL 기반으로 설계한 거야?",
+        thread_context=context, agent=agent,
+    ) is None
+    assert workflow.has_pending("C1", "1.1")
+    assert agent.calls == 1
 
 
 def test_workflow_does_not_ask_for_clarification_without_a_pending_plan(tmp_path: Path) -> None:

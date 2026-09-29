@@ -6,11 +6,17 @@ disk under the configured root (see plan.md's design summary).
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from src.project_resolver import InvalidProjectName, ProjectResolver, UnknownProject
+from src.project_resolver import (
+    AmbiguousProject,
+    InvalidProjectName,
+    ProjectResolver,
+    UnknownProject,
+)
 
 
 def test_resolve_returns_path_for_existing_project(tmp_path: Path) -> None:
@@ -36,6 +42,31 @@ def test_resolve_raises_unknown_project_when_directory_does_not_exist(tmp_path: 
 
     with pytest.raises(UnknownProject):
         resolver.resolve("missing-project")
+
+
+def test_resolve_uses_unique_git_origin_repository_name(tmp_path: Path) -> None:
+    checkout = tmp_path / "piplup-agent-v2"
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "remote", "add", "origin", "https://github.com/ilgolf/slack_bot_agent.git"],
+        check=True,
+    )
+
+    assert ProjectResolver(root=tmp_path).resolve("slack_bot_agent") == checkout
+
+
+def test_duplicate_origin_name_requires_local_folder_name(tmp_path: Path) -> None:
+    for name in ("first-checkout", "second-checkout"):
+        checkout = tmp_path / name
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+        subprocess.run(
+            ["git", "-C", str(checkout), "remote", "add", "origin",
+             "git@github.com:ilgolf/slack_bot_agent.git"],
+            check=True,
+        )
+
+    with pytest.raises(AmbiguousProject):
+        ProjectResolver(root=tmp_path).resolve("slack_bot_agent")
 
 
 @pytest.mark.parametrize("bad_name", ["../secret", "/etc/passwd", "sub/dir", ".."])

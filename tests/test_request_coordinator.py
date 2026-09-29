@@ -75,6 +75,42 @@ def test_execute_confirmation_consumes_pending_code_plan(tmp_path: Path) -> None
     assert readme.read_text() == "after\n"
 
 
+def test_design_question_preserves_pending_code_plan(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    readme = project / "README.md"
+    readme.write_text("before\n")
+    coordinator = RequestCoordinator(
+        router=RequestRouter(),
+        execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
+        artifact_workflow=ArtifactGenerationWorkflow(),
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = PlanningAgent()
+
+    coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="my-project README.md 수정해줘",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+    _, answer = coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="GraphQL 기반으로 설계한 거야?",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+
+    assert "GraphQL" in answer
+    assert "보류 중인 실행 계획" not in answer
+    assert coordinator.execution_workflow.has_pending("C1", "1.1")
+    assert readme.read_text() == "before\n"
+
+    _, execution = coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="실행",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+    assert "구현 및 검증 완료" in execution
+    assert readme.read_text() == "after\n"
+
+
 def test_ambiguous_follow_up_gets_clarification_instead_of_general_analysis(
     tmp_path: Path,
 ) -> None:

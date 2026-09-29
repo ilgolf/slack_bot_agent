@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from src.linear_client import LinearApiError, LinearClient
 
@@ -43,6 +43,61 @@ mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
 
 
 @dataclass(frozen=True)
+class LinearOperationCapability:
+    """One GraphQL operation intentionally exposed by this integration."""
+
+    name: str
+    kind: Literal["query", "mutation"]
+    description: str
+
+
+@dataclass(frozen=True)
+class LinearCapability:
+    """Read-only facts about the fixed Linear GraphQL integration."""
+
+    endpoint: str
+    documentation_url: str
+    authentication: str
+    operations: tuple[LinearOperationCapability, ...]
+
+    @property
+    def read_operations(self) -> tuple[LinearOperationCapability, ...]:
+        return tuple(operation for operation in self.operations if operation.kind == "query")
+
+    @property
+    def mutation_operations(self) -> tuple[LinearOperationCapability, ...]:
+        return tuple(operation for operation in self.operations if operation.kind == "mutation")
+
+
+_LIST_TEAMS_CAPABILITY = LinearOperationCapability("list_teams", "query", "팀 목록 조회")
+_LIST_ISSUES_CAPABILITY = LinearOperationCapability("list_issues", "query", "이슈 목록 조회")
+_GET_ISSUE_CAPABILITY = LinearOperationCapability("get_issue", "query", "이슈 단건 조회")
+_CREATE_ISSUE_CAPABILITY = LinearOperationCapability("create_issue", "mutation", "이슈 생성")
+_UPDATE_ISSUE_CAPABILITY = LinearOperationCapability(
+    "update_issue", "mutation", "이슈 제목·설명·상태 수정"
+)
+
+
+LINEAR_CAPABILITY = LinearCapability(
+    endpoint="https://api.linear.app/graphql",
+    documentation_url="https://linear.app/developers/graphql",
+    authentication="LINEAR_API_KEY (Linear Personal API key)",
+    operations=(
+        _LIST_TEAMS_CAPABILITY,
+        _LIST_ISSUES_CAPABILITY,
+        _GET_ISSUE_CAPABILITY,
+        _CREATE_ISSUE_CAPABILITY,
+        _UPDATE_ISSUE_CAPABILITY,
+    ),
+)
+
+
+def linear_capability() -> LinearCapability:
+    """Return the supported operations without contacting Linear."""
+    return LINEAR_CAPABILITY
+
+
+@dataclass(frozen=True)
 class LinearTeam:
     id: str
     name: str
@@ -69,14 +124,16 @@ class LinearTools:
         self.client = client
 
     def list_teams(self) -> list[LinearTeam]:
-        data = self.client.query(operation="list_teams", document=LIST_TEAMS)
+        data = self.client.query(operation=_LIST_TEAMS_CAPABILITY.name, document=LIST_TEAMS)
         return [_to_team(item) for item in _nodes(data, "teams")]
 
     def list_issues(self, *, first: int = 20) -> list[LinearIssue]:
         if not 1 <= first <= 50:
             raise ValueError("조회할 이슈 수는 1~50개여야 합니다")
         data = self.client.query(
-            operation="list_issues", document=LIST_ISSUES, variables={"first": first}
+            operation=_LIST_ISSUES_CAPABILITY.name,
+            document=LIST_ISSUES,
+            variables={"first": first},
         )
         return [_to_issue(item) for item in _nodes(data, "issues")]
 
@@ -84,7 +141,9 @@ class LinearTools:
         if not identifier.strip():
             raise ValueError("이슈 식별자가 필요합니다")
         data = self.client.query(
-            operation="get_issue", document=GET_ISSUE, variables={"identifier": identifier}
+            operation=_GET_ISSUE_CAPABILITY.name,
+            document=GET_ISSUE,
+            variables={"identifier": identifier},
         )
         raw_issue = data.get("issue")
         if raw_issue is None:
@@ -102,7 +161,9 @@ class LinearTools:
         if description:
             input_data["description"] = description
         data = self.client.query(
-            operation="create_issue", document=CREATE_ISSUE, variables={"input": input_data}
+            operation=_CREATE_ISSUE_CAPABILITY.name,
+            document=CREATE_ISSUE,
+            variables={"input": input_data},
         )
         return _mutation_issue(data, "issueCreate")
 
@@ -128,7 +189,7 @@ class LinearTools:
         if not input_data:
             raise ValueError("제목, 설명, 상태 ID 중 하나를 변경해야 합니다")
         data = self.client.query(
-            operation="update_issue",
+            operation=_UPDATE_ISSUE_CAPABILITY.name,
             document=UPDATE_ISSUE,
             variables={"id": issue_id, "input": input_data},
         )

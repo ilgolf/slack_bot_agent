@@ -13,6 +13,7 @@ from src.linear_tools import (
     LIST_TEAMS,
     UPDATE_ISSUE,
     LinearTools,
+    linear_capability,
 )
 
 
@@ -87,3 +88,18 @@ def test_mutation_validates_required_values() -> None:
         tools.update_issue(issue_id="uuid")
     with pytest.raises(ValueError, match="1~50"):
         tools.list_issues(first=51)
+
+
+def test_capability_lists_only_the_fixed_graphql_operations() -> None:
+    capability = linear_capability()
+
+    assert capability.endpoint == "https://api.linear.app/graphql"
+    assert [operation.name for operation in capability.read_operations] == [
+        "list_teams",
+        "list_issues",
+        "get_issue",
+    ]
+    assert [operation.name for operation in capability.mutation_operations] == [
+        "create_issue",
+        "update_issue",
+    ]
