@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from src.agent import AnalysisAgent
@@ -28,6 +29,7 @@ class RequestCoordinator:
         text: str,
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
+        on_progress: Callable[[str], None] | None = None,
     ) -> tuple[RoutedRequest, str]:
         routed = self.router.route(text)
         if routed.text.casefold() in {"trace 요약", "trace summary"}:
@@ -43,6 +45,7 @@ class RequestCoordinator:
                 text=text,
                 thread_context=thread_context,
                 agent=agent,
+                on_progress=on_progress,
             )
         # One owner appends both messages. Workflows deliberately remain
         # context-free, so Slack and /debug/command cannot diverge.
@@ -59,6 +62,7 @@ class RequestCoordinator:
         text: str,
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
+        on_progress: Callable[[str], None] | None = None,
     ) -> str:
         if routed.intent is RequestIntent.CONTROL_CONFIRM:
             return self._confirm(
@@ -85,6 +89,7 @@ class RequestCoordinator:
                     text=text,
                     thread_context=thread_context,
                     agent=agent,
+                    on_progress=on_progress,
                 )
                 or "코드 작업 요청을 이해하지 못했습니다."
             )

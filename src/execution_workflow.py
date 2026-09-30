@@ -89,6 +89,7 @@ _EXECUTION_MARKERS = (
 _ALLOWED_VERIFICATIONS = ("run_tests", "run_lint", "run_typecheck")
 _MAX_WRITE_BYTES = 1_000_000
 DEFAULT_MAX_AUTO_REPAIRS = 2
+DEFAULT_MAX_AUTOPILOT_ITEMS = 20
 _GREP_IGNORED_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__"})
 
 
@@ -640,7 +641,12 @@ class ExecutionWorkflow:
         plan_store: PendingPlanStore | None = None,
         awaiting_project_store: AwaitingProjectStore | None = None,
         code_work_state_store: CodeWorkStateStore | None = None,
+        max_autopilot_items: int = DEFAULT_MAX_AUTOPILOT_ITEMS,
     ) -> None:
+        self.max_autopilot_items = max_autopilot_items
+        self._autopilot_active: set[tuple[str, str]] = set()
+        self._autopilot_cancelled: set[tuple[str, str]] = set()
+        self._last_results: dict[tuple[str, str], ExecutionResult] = {}
         self.project_resolver = project_resolver
         self.context_loader = context_loader or ProjectContextLoader(project_resolver)
         self.skill_registry = skill_registry or SkillRegistry()
@@ -657,6 +663,8 @@ class ExecutionWorkflow:
         thread_context: ThreadContextStore,
         agent: object,
         defer_missing_confirmation: bool = False,
+        auto_execute: bool = False,
+        on_progress: Callable[[str], None] | None = None,
     ) -> str | None:
         command_text = _SLACK_MENTION.sub("", text).strip()
         if _CONFIRMATION.fullmatch(command_text):
@@ -665,6 +673,9 @@ class ExecutionWorkflow:
                 return None
             return response
         if _CANCELLATION.fullmatch(command_text):
+            if (channel_id, thread_ts) in self._autopilot_active:
+                self._autopilot_cancelled.add((channel_id, thread_ts))
+                return "⛔ 자동 진행 취소를 요청했습니다. 현재 항목이 끝나면 중단합니다."
             cancellation_response = self._cancel_pending(channel_id, thread_ts)
             if defer_missing_confirmation and cancellation_response is None:
                 return None
@@ -684,8 +695,15 @@ class ExecutionWorkflow:
         # next message — that reply (e.g. just a bare project name) has no
         # code-work marker of its own and would otherwise be judged unrelated.
         awaiting_project = self.awaiting_project_store.has_pending(channel_id, thread_ts)
+        autopilot = auto_execute or _is_autopilot_request(command_text)
+        if autopilot and not auto_execute and (channel_id, thread_ts) in self._autopilot_active:
+            return (
+                "⏳ 이미 자동 진행 중입니다. 끝나면 결과를 알려드립니다. "
+                "중단하려면 `취소`라고 보내 주세요."
+            )
         if (
             not _is_execution_request(command_text)
+            and not autopilot
             and not redirect_with_pending_plan
             and not awaiting_project
         ):
@@ -701,6 +719,10 @@ class ExecutionWorkflow:
             self.awaiting_project_store.mark(channel_id, thread_ts)
             return "코드 작업할 대상 프로젝트명을 요청에 포함해 주세요."
         self.awaiting_project_store.clear(channel_id, thread_ts)
+        if autopilot and not auto_execute:
+            return self._run_autopilot(
+                project_name, channel_id, thread_ts, thread_context, agent, on_progress
+            )
         creator = getattr(agent, "create_execution_plan", None)
         if not callable(creator):
             return "코드 실행 계획에는 LLM 코드 에이전트가 필요합니다."
@@ -819,6 +841,10 @@ class ExecutionWorkflow:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return f"실행 계획 생성에 실패했습니다: {exc}"
 
+        if not (detailed_context.root / "pyproject.toml").exists():
+            # The fixed checks are Python tooling; on any other stack they would
+            # only fail for reasons unrelated to the change.
+            plan = replace(plan, verification_commands=[])
         plan = replace(
             plan,
             applied_agents=[
@@ -827,6 +853,8 @@ class ExecutionWorkflow:
             applied_skills=[f"{skill.name}@{skill.version}" for skill in skills],
         )
         self.plan_store.put(channel_id, thread_ts, plan, request=command_text)
+        if autopilot:
+            return self._execute_pending(channel_id, thread_ts, agent)
         self.code_work_state_store.set(
             channel_id=channel_id,
             thread_ts=thread_ts,
@@ -846,6 +874,81 @@ class ExecutionWorkflow:
         ]
         return render_plan_preview(
             plan, detailed_context.git, diffs, evidence_paths=evidence_paths
+        )
+
+    def _run_autopilot(
+        self,
+        project_name: str,
+        channel_id: str,
+        thread_ts: str,
+        thread_context: ThreadContextStore,
+        agent: object,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> str | None:
+        """Plan and execute every unchecked plan.md item without confirmation,
+        checking each off only after its verification succeeded."""
+        key = (channel_id, thread_ts)
+        self._autopilot_active.add(key)
+        try:
+            return self._autopilot_loop(project_name, key, thread_context, agent, on_progress)
+        finally:
+            self._autopilot_active.discard(key)
+            self._autopilot_cancelled.discard(key)
+
+    def _autopilot_loop(
+        self,
+        project_name: str,
+        key: tuple[str, str],
+        thread_context: ThreadContextStore,
+        agent: object,
+        on_progress: Callable[[str], None] | None,
+    ) -> str | None:
+        channel_id, thread_ts = key
+        plan_file = self.project_resolver.resolve(project_name) / "plan.md"
+        total = len(_UNCHECKED_ITEM.findall(plan_file.read_text()))
+        result: str | None = None
+        completed = 0
+        summary_lines: list[str] = []
+        all_diffs: list[str] = []
+        while (item := next_unchecked_item(plan_file.read_text())) is not None:
+            if completed >= self.max_autopilot_items:
+                remaining = len(_UNCHECKED_ITEM.findall(plan_file.read_text()))
+                return (
+                    f"⛔ 자동 진행 중단: 최대 {self.max_autopilot_items}개 항목까지만 "
+                    f"진행합니다 ({completed}개 완료, 남은 항목 {remaining}개)\n{result}"
+                )
+            result = self.process(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                text=f"{project_name} plan.md 기준으로 다음 항목을 진행해: {item}",
+                thread_context=thread_context,
+                agent=agent,
+                auto_execute=True,
+            )
+            state = self.code_work_state_store.state(channel_id=channel_id, thread_ts=thread_ts)
+            if state is not CodeWorkState.SUCCEEDED:
+                return f"⛔ 자동 진행 중단 ({completed}개 완료): `{item}` 실패\n{result}"
+            plan_file.write_text(
+                plan_file.read_text().replace(f"- [ ] {item}", f"- [x] {item}", 1)
+            )
+            completed += 1
+            finished = self._last_results.get(key)
+            files = ", ".join(
+                f"`{path}`" for path in dict.fromkeys(finished.changed_files if finished else [])
+            )
+            summary_lines.append(f"- ✅ {item}: {files}")
+            if finished is not None:
+                all_diffs.extend(finished.diffs)
+                summary_lines.extend(f"  {_render_check(check)}" for check in finished.checks)
+            if on_progress is not None:
+                on_progress(f"🔄 자동 진행 {completed}/{total} 완료")
+            if key in self._autopilot_cancelled:
+                remaining = len(_UNCHECKED_ITEM.findall(plan_file.read_text()))
+                return f"⛔ 자동 진행 취소 ({completed}개 완료, 남은 항목 {remaining}개)\n{result}"
+        return (
+            f"✅ 전체 완료 ({completed}/{total}개 항목)\n"
+            + "\n".join(summary_lines)
+            + f"\nDiff 요약: {_diff_summary(all_diffs)}"
         )
 
     def has_pending(self, channel_id: str, thread_ts: str) -> bool:
@@ -984,6 +1087,7 @@ class ExecutionWorkflow:
             repair_attempts=repair_attempts,
             repair_failure_reason=repair_failure_reason,
         )
+        self._last_results[(channel_id, thread_ts)] = result
         logger.info(
             "execution_completed project=%s files=%s checks=%s success=%s",
             plan.project_name,
@@ -1123,6 +1227,11 @@ def render_plan_preview(
     steps = "\n".join(f"- `{step.path}` 작성" for step in plan.steps) or "- 파일 변경 없음"
     checks = ", ".join(plan.verification_commands) or "없음"
     evidence = ", ".join(f"`{path}`" for path in evidence_paths) or "없음"
+    risk = (
+        "검증은 승인 후에만 실행되며, 환경 의존 오류가 발생할 수 있습니다."
+        if plan.verification_commands
+        else "자동 검증 없이 적용됩니다. 적용 후 직접 확인해 주세요."
+    )
     git_summary = (
         "Git 저장소 아님" if not git.is_repository else f"기존 변경 {len(git.changed_files)}개"
     )
@@ -1142,7 +1251,7 @@ def render_plan_preview(
         f"조사 근거: {evidence}\n고정 검증 명령: {checks}\n"
         f"자동 복구 예산: 최대 {max_auto_repairs}회\n"
         "미지원 작업: 임의 셸·HTTP·패키지 설치/삭제·rename·Git commit/push\n"
-        "남은 위험: 검증은 승인 후에만 실행되며, 환경 의존 오류가 발생할 수 있습니다.\n"
+        f"남은 위험: {risk}\n"
         f"적용 AGENTS.md: {instructions}\n적용 Skill: {skills}\n\n"
         "내용을 확인한 뒤 같은 스레드에 `실행`이라고 보내면 적용합니다. "
         "`취소`하면 계획만 제거합니다."
@@ -1281,6 +1390,18 @@ def _is_plan_follow_request(text: str) -> bool:
     return "plan.md에 적은대로" in normalized or "plan.md에 적은 대로" in normalized
 
 
+def _is_autopilot_request(text: str) -> bool:
+    return "끝까지 진행" in text
+
+
+_UNCHECKED_ITEM = re.compile(r"^\s*- \[ \] (.+)$", re.MULTILINE)
+
+
+def next_unchecked_item(plan_text: str) -> str | None:
+    match = _UNCHECKED_ITEM.search(plan_text)
+    return match.group(1) if match else None
+
+
 _PROTECTED_META_BASENAMES = {"plan.md", "plan.archive.md", "claude.md", "agents.md"}
 _PROTECTED_META_PREFIXES = (".omx/", ".claude/", ".git/")
 
@@ -1344,8 +1465,8 @@ def _validate_plan(
 
 
 def _is_source_or_test_path(path: str) -> bool:
-    normalized = path.replace("\\", "/")
-    return normalized.startswith("src/") or normalized.startswith("tests/")
+    directories = path.replace("\\", "/").split("/")[:-1]
+    return "src" in directories or directories[:1] == ["tests"]
 
 
 def _validate_repair_steps(steps: object, approved_paths: Sequence[str]) -> None:
@@ -1377,7 +1498,7 @@ def _verification_fingerprint(checks: Sequence[CommandResult]) -> str:
 
 def _remaining_risks(checks: list[CommandResult]) -> list[str]:
     if not checks:
-        return ["검증 명령이 실행하지 않은 환경별 통합 테스트는 확인되지 않았습니다."]
+        return ["자동 검증 없이 적용됐습니다. 변경 내용을 직접 확인해 주세요."]
     if any(check.status is VerificationStatus.ENVIRONMENT_ERROR for check in checks):
         return ["검증 실행 환경 오류를 해결한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
     if any(check.status is VerificationStatus.TIMED_OUT for check in checks):
