@@ -444,3 +444,22 @@ def test_duplicate_autopilot_request_in_same_thread_is_ignored(tmp_path: Path) -
     assert agent.calls == 2
     assert result is not None
     assert "전체 완료 (2/2개 항목)" in result
+
+
+def test_autopilot_summary_marks_items_that_ran_without_verification(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("- [ ] first\n")
+    agent = SequencedPlanningAgent([_write_plan("a.txt", "A\n")])
+    workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md 기준으로 끝까지 진행해",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "- ✅ first: `a.txt` (검증 없음)" in result

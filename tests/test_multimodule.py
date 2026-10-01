@@ -149,3 +149,46 @@ def test_execution_result_warns_when_no_verification_ran() -> None:
     rendered = render_execution_result(_module_plan("api/src/main/X.java"), result)
 
     assert "자동 검증 없이 적용됐습니다" in rendered
+
+
+def test_analysis_prompt_points_to_find_files_for_deep_or_multi_module_layouts() -> None:
+    from src.langchain_agent import _PROMPT_TEMPLATE
+
+    assert "멀티 모듈" in _PROMPT_TEMPLATE
+    assert "find_files" in _PROMPT_TEMPLATE
+    assert _PROMPT_TEMPLATE.index("find_files") < _PROMPT_TEMPLATE.index("질문:")
+
+
+def test_analysis_prompt_tells_model_to_narrow_a_truncated_find_files_result() -> None:
+    from src.langchain_agent import _PROMPT_TEMPLATE
+
+    assert "결과가 잘렸습니다" in _PROMPT_TEMPLATE
+    assert "relative_path" in _PROMPT_TEMPLATE
+
+
+def test_execution_result_does_not_claim_verification_when_none_ran() -> None:
+    from src.execution_workflow import ExecutionResult, render_execution_result
+
+    result = ExecutionResult(
+        changed_files=["api/src/main/X.java"], diffs=[], checks=[], remaining_risks=[]
+    )
+
+    rendered = render_execution_result(_module_plan("api/src/main/X.java"), result)
+
+    assert rendered.startswith("✅ 구현 완료 (자동 검증 없음)")
+    assert "검증 완료" not in rendered
+
+
+def test_execution_result_keeps_verified_headline_when_checks_passed() -> None:
+    from src.execution_workflow import CommandResult, ExecutionResult, render_execution_result
+
+    result = ExecutionResult(
+        changed_files=["api/src/main/X.java"],
+        diffs=[],
+        checks=[CommandResult("run_tests", True, "ok")],
+        remaining_risks=[],
+    )
+
+    rendered = render_execution_result(_module_plan("api/src/main/X.java"), result)
+
+    assert rendered.startswith("✅ 구현 및 검증 완료")

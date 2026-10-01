@@ -936,7 +936,8 @@ class ExecutionWorkflow:
             files = ", ".join(
                 f"`{path}`" for path in dict.fromkeys(finished.changed_files if finished else [])
             )
-            summary_lines.append(f"- ✅ {item}: {files}")
+            unverified = " (검증 없음)" if finished is None or not finished.checks else ""
+            summary_lines.append(f"- ✅ {item}: {files}{unverified}")
             if finished is not None:
                 all_diffs.extend(finished.diffs)
                 summary_lines.extend(f"  {_render_check(check)}" for check in finished.checks)
@@ -1258,29 +1259,25 @@ def render_plan_preview(
     )
 
 
+def _outcome_line(result: ExecutionResult) -> str:
+    if result.repair_failure_reason:
+        return f"❌ 구현 실패: {result.repair_failure_reason}"
+    if not result.checks:
+        return "✅ 구현 완료 (자동 검증 없음)"
+    if not all(check.success for check in result.checks):
+        return "⚠️ 변경 적용, 검증 실패"
+    if result.repair_attempts:
+        return f"✅ 구현 완료 (자동 복구 {result.repair_attempts}회)"
+    return render_code_work_status(CodeWorkState.SUCCEEDED)
+
+
 def render_execution_result(plan: ExecutionPlan, result: ExecutionResult) -> str:
     changes = "\n".join(f"- `{path}`" for path in result.changed_files) or "- 파일 변경 없음"
     checks = "\n".join(_render_check(check) for check in result.checks) or "- 실행한 검증 명령 없음"
     risks = "\n".join(f"- {risk}" for risk in result.remaining_risks) or "- 없음"
     instructions = ", ".join(f"`{item}`" for item in plan.applied_agents) or "없음"
     skills = ", ".join(f"`{item}`" for item in plan.applied_skills) or "없음"
-    outcome = (
-        (
-            "❌ 구현 실패: 자동 복구 한도 초과"
-            if result.repair_failure_reason == "자동 복구 한도 초과"
-            else f"❌ 구현 실패: {result.repair_failure_reason}"
-        )
-        if result.repair_failure_reason
-        else (
-        (
-            f"✅ 구현 완료 (자동 복구 {result.repair_attempts}회)"
-            if result.repair_attempts
-            else render_code_work_status(CodeWorkState.SUCCEEDED)
-        )
-        if all(check.success for check in result.checks)
-        else "⚠️ 변경 적용, 검증 실패"
-        )
-    )
+    outcome = _outcome_line(result)
     return (
         f"{outcome}\n변경 파일:\n{changes}\nDiff 요약: {_diff_summary(result.diffs)}\n"
         f"검증 결과:\n{checks}\n"

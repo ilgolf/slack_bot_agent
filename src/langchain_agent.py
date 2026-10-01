@@ -54,7 +54,11 @@ _PROMPT_TEMPLATE = (
     "추가 도구 호출 없이 최종 JSON을 반환하세요.\n\n"
     "- 일반 분석에서는 먼저 선택된 프로젝트의 루트에 list_files를 호출해 구조를 확인하세요. "
     "README.md는 사용자가 README 요약을 요청한 경우에만 단독 근거가 될 수 있습니다. "
-    "일반 분석은 README 외 구현·설정·테스트 파일을 적어도 하나 read_file로 읽은 뒤 답하세요.\n\n"
+    "일반 분석은 README 외 구현·설정·테스트 파일을 적어도 하나 read_file로 읽은 뒤 답하세요.\n"
+    "- 루트에 모듈 디렉터리만 보이는 멀티 모듈 프로젝트처럼 구조가 깊으면 list_files를 "
+    "반복하지 말고 find_files로 소스 파일을 찾은 뒤 read_file로 읽으세요. "
+    "find_files 결과에 '결과가 잘렸습니다'가 있으면 relative_path를 관련 모듈 디렉터리로 "
+    "좁혀 다시 호출하세요.\n\n"
     "질문: {question}\n\n"
     "코드 블록이나 설명을 덧붙이지 말고 다음 JSON 형식으로만 답변하세요: "
     '{{"summary": "...", "findings": ["..."], "limitations": ["..."]}}'
