@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.project_resolver import ProjectResolver
-from src.tools import list_files, list_projects, read_file
+from src.tools import find_files, list_files, list_projects, read_file
 
 
 def test_read_file_reads_file_inside_project(tmp_path: Path) -> None:
@@ -96,3 +96,56 @@ def test_list_projects_includes_orca_projects_collection(tmp_path: Path) -> None
     project_resolver = ProjectResolver(root=tmp_path)
 
     assert list_projects(project_resolver) == ["alpha"]
+
+
+def test_find_files_lists_nested_files_and_skips_ignored_directories(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    (project / "api" / "src" / "main" / "java").mkdir(parents=True)
+    (project / "api" / "src" / "main" / "java" / "X.java").write_text("class X {}")
+    (project / "README.md").write_text("hello")
+    (project / ".git").mkdir()
+    (project / ".git" / "config").write_text("[core]")
+    (project / "node_modules" / "pkg").mkdir(parents=True)
+    (project / "node_modules" / "pkg" / "index.js").write_text("x")
+    project_resolver = ProjectResolver(root=tmp_path)
+
+    result = find_files(project_resolver, "my-project")
+
+    assert result == ["README.md", "api/src/main/java/X.java"]
+
+
+def test_find_files_truncates_results_over_the_limit_and_says_so(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    for index in range(5):
+        (project / f"f{index}.txt").write_text("x")
+    project_resolver = ProjectResolver(root=tmp_path)
+
+    result = find_files(project_resolver, "my-project", max_results=3)
+
+    assert result[:3] == ["f0.txt", "f1.txt", "f2.txt"]
+    assert len(result) == 4
+    assert "5개 중 3개" in result[3]
+
+
+def test_find_files_excludes_files_deeper_than_the_depth_limit(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    (project / "d1" / "d2").mkdir(parents=True)
+    (project / "a.txt").write_text("x")
+    (project / "d1" / "b.txt").write_text("x")
+    (project / "d1" / "d2" / "c.txt").write_text("x")
+    project_resolver = ProjectResolver(root=tmp_path)
+
+    result = find_files(project_resolver, "my-project", max_depth=2)
+
+    assert result == ["a.txt", "d1/b.txt"]
+
+
+def test_find_files_rejects_a_path_escaping_the_project(tmp_path: Path) -> None:
+    (tmp_path / "my-project").mkdir()
+    (tmp_path / "secret.txt").write_text("top secret")
+    project_resolver = ProjectResolver(root=tmp_path)
+
+    result = find_files(project_resolver, "my-project", "..")
+
+    assert result == "허용되지 않은 경로입니다: .."

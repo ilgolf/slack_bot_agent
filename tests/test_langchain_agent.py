@@ -22,7 +22,7 @@ from src.code_agent_planner import LangChainNextActionPlanner
 from src.execution_workflow import ExistingFile, ProjectContextLoader
 from src.langchain_agent import LangChainAnalysisAgent
 from src.project_resolver import ProjectResolver
-from src.tools import list_files, read_file
+from src.tools import find_files, list_files, read_file
 
 
 def test_langchain_agent_analyze_returns_analysis_result(tmp_path: Path) -> None:
@@ -737,3 +737,20 @@ def test_execution_plan_uses_the_planning_model_when_configured(tmp_path: Path) 
 
     assert plan.affected_files == ["src/a.py"]
     assert base_model.last_input is None
+
+
+def test_langchain_agent_exposes_find_files_bound_to_the_selected_project(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    (project / "api" / "src" / "main").mkdir(parents=True)
+    (project / "api" / "src" / "main" / "X.java").write_text("class X {}")
+    agent = LangChainAnalysisAgent(
+        chat_model=FakeListChatModel(responses=["{}"]),
+        project_resolver=ProjectResolver(root=tmp_path),
+        tools=[find_files],
+    )
+
+    tools = agent._build_tools("my-project")
+
+    assert [tool.name for tool in tools] == ["find_files"]
+    assert set(tools[0].args) <= {"relative_path"}
+    assert tools[0].invoke({}) == ["api/src/main/X.java"]

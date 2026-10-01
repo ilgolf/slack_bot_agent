@@ -9,7 +9,7 @@ from src.agent import FakeAnalysisAgent, get_agent
 from src.agent_trace import ThreadTraceStore
 from src.config import Settings
 from src.langchain_agent import LangChainAnalysisAgent
-from src.tools import list_files, list_projects, read_file
+from src.tools import find_files, list_files, list_projects, read_file
 
 
 def test_get_agent_returns_fake_by_default() -> None:
@@ -26,7 +26,7 @@ def test_get_agent_returns_langchain_agent_for_anthropic() -> None:
     agent = get_agent("anthropic", settings=settings)
 
     assert isinstance(agent, LangChainAnalysisAgent)
-    assert agent.tool_funcs == [list_projects, read_file, list_files]
+    assert agent.tool_funcs == [list_projects, read_file, list_files, find_files]
 
 
 def test_get_agent_returns_langchain_agent_for_openai() -> None:
@@ -35,11 +35,11 @@ def test_get_agent_returns_langchain_agent_for_openai() -> None:
     agent = get_agent("openai", settings=settings)
 
     assert isinstance(agent, LangChainAnalysisAgent)
-    assert agent.tool_funcs == [list_projects, read_file, list_files]
+    assert agent.tool_funcs == [list_projects, read_file, list_files, find_files]
 
 
 def test_single_provider_is_shared_by_analysis_and_planning_roles() -> None:
-    settings = Settings(openai_api_key="sk-fake")
+    settings = Settings(openai_api_key="sk-fake", llm_provider="openai")
 
     agent = get_agent(settings.llm_provider, settings=settings)
 

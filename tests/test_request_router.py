@@ -227,3 +227,9 @@ def test_classifier_is_not_called_when_rules_already_decide(text: str) -> None:
     RequestRouter(intent_classifier=classifier).route(text)
 
     assert classifier.calls == 0
+
+
+def test_plan_autopilot_request_is_code_work() -> None:
+    routed = RequestRouter().route("@Goodra-bot my-project plan.md 기준으로 끝까지 진행해")
+
+    assert routed.intent is RequestIntent.CODE_WORK

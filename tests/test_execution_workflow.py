@@ -464,6 +464,7 @@ def test_execution_records_failed_state_when_verification_fails(
 ) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     (project / "README.md").write_text("before\n")
     state_store = CodeWorkStateStore()
     workflow = ExecutionWorkflow(
@@ -545,6 +546,7 @@ def test_execution_repairs_a_failed_check_once_then_succeeds(
 ) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     readme = project / "README.md"
     readme.write_text("before\n")
     checks = iter(
@@ -584,6 +586,7 @@ def test_execution_stops_after_the_configured_repair_budget(
 ) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     (project / "README.md").write_text("before\n")
     checks = iter(["failure one", "failure two", "failure three"])
     monkeypatch.setattr(
@@ -620,6 +623,7 @@ def test_execution_stops_when_the_same_verification_failure_repeats(
 ) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     (project / "README.md").write_text("before\n")
     monkeypatch.setattr(
         ProjectExecutionTools,
@@ -655,6 +659,7 @@ def test_execution_stops_when_the_same_repair_diff_repeats(
 ) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     (project / "README.md").write_text("before\n")
     failures = iter(["failure one", "failure two"])
     monkeypatch.setattr(
@@ -691,6 +696,7 @@ def test_execution_returns_safe_failure_when_repair_planner_errors(
 ) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     (project / "README.md").write_text("before\n")
     monkeypatch.setattr(
         ProjectExecutionTools,
@@ -725,6 +731,7 @@ def test_repair_requires_new_confirmation_before_editing_a_protected_file(
 ) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     protected = project / "plan.md"
     protected.write_text("# before\n")
     monkeypatch.setattr(
@@ -1829,6 +1836,7 @@ def test_workflow_previews_plan_then_writes_only_after_execute(tmp_path: Path) -
 def test_plan_preview_includes_confirmed_scope_and_repair_budget(tmp_path: Path) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     (project / "README.md").write_text("before\n")
     preview = _workflow(tmp_path).process(
         channel_id="C1",
@@ -1854,6 +1862,7 @@ def test_execution_end_to_end_reports_failed_verification_not_success(
     though the write step itself already succeeded."""
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     (project / "README.md").write_text("before\n")
 
     def fake_run(
@@ -1890,6 +1899,7 @@ def test_execution_reports_verification_timeout_not_success(
     never silently rendered as a passing check."""
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     (project / "README.md").write_text("before\n")
 
     def fake_run(
@@ -2216,6 +2226,7 @@ def test_execution_reports_missing_verification_runner_after_writing(
     than escaping the listener after the approved file write has happened."""
     project = tmp_path / "my-project"
     project.mkdir()
+    (project / "pyproject.toml").write_text("")
     readme = project / "README.md"
     readme.write_text("before\n")
     plan = _plan(checks=["run_tests"])

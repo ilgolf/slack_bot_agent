@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from src.agent import AnalysisAgent
@@ -29,6 +30,7 @@ class RequestCoordinator:
         text: str,
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
+        on_progress: Callable[[str], None] | None = None,
     ) -> tuple[RoutedRequest, str]:
         routed = self.router.route(
             text, thread_context=self._thread_work_context(channel_id, thread_ts)
@@ -46,6 +48,7 @@ class RequestCoordinator:
                 text=text,
                 thread_context=thread_context,
                 agent=agent,
+                on_progress=on_progress,
             )
         # One owner appends both messages. Workflows deliberately remain
         # context-free, so Slack and /debug/command cannot diverge.
@@ -71,6 +74,7 @@ class RequestCoordinator:
         text: str,
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
+        on_progress: Callable[[str], None] | None = None,
     ) -> str:
         if routed.intent is RequestIntent.CONTROL_CONFIRM:
             return self._confirm(
@@ -98,6 +102,7 @@ class RequestCoordinator:
                     thread_context=thread_context,
                     agent=agent,
                     trusted_code_work=routed.llm_classified,
+                    on_progress=on_progress,
                 )
                 or "코드 작업 요청을 이해하지 못했습니다."
             )

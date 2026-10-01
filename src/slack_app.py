@@ -44,6 +44,7 @@ def handle_app_mention(
     execution_workflow: ExecutionWorkflow | None = None,
     linear_workflow: LinearIntegrationWorkflow | None = None,
     coordinator: RequestCoordinator | None = None,
+    client: Any | None = None,
 ) -> None:
     channel_id = event["channel"]
     thread_ts = event.get("thread_ts", event["ts"])
@@ -66,7 +67,8 @@ def handle_app_mention(
             initial_status = "Linear 작업 중입니다…"
         elif intent is RequestIntent.ARTIFACT_GENERATION:
             initial_status = "파일 초안 생성 중입니다…"
-    say(text=initial_status, thread_ts=thread_ts)
+    status_message = say(text=initial_status, thread_ts=thread_ts)
+    on_progress = _progress_updater(client, channel_id, status_message)
     if run_store is not None:
         run_store.set_running(channel_id=channel_id, thread_ts=thread_ts)
 
@@ -79,6 +81,7 @@ def handle_app_mention(
                     text=text,
                     thread_context=thread_context,
                     agent=agent,
+                    on_progress=on_progress,
                 )
             else:
                 response = None
@@ -128,6 +131,20 @@ def handle_app_mention(
         run_store.complete(channel_id=channel_id, thread_ts=thread_ts)
 
 
+def _progress_updater(
+    client: Any | None, channel_id: str, status_message: Any
+) -> Callable[[str], None] | None:
+    """Edit the initial status message in place; no client or `ts` means no updates."""
+    ts = status_message.get("ts") if hasattr(status_message, "get") else None
+    if client is None or not ts:
+        return None
+
+    def update(text: str) -> None:
+        client.chat_update(channel=channel_id, ts=ts, text=text)
+
+    return update
+
+
 def build_slack_app(settings: Settings) -> App:
     if not settings.slack_bot_token:
         raise SlackConfigError("SLACK_BOT_TOKEN is required to run the Slack app")
@@ -165,7 +182,9 @@ def start_socket_mode(
     )
 
     @slack_app.event("app_mention")
-    def _on_app_mention(event: Mapping[str, Any], say: Callable[..., Any]) -> None:
+    def _on_app_mention(
+        event: Mapping[str, Any], say: Callable[..., Any], client: Any
+    ) -> None:
         handle_app_mention(
             event,
             say,
@@ -176,6 +195,7 @@ def start_socket_mode(
             execution_workflow=execution_workflow,
             linear_workflow=linear_workflow,
             coordinator=coordinator,
+            client=client,
         )
 
     @slack_app.event("message")
