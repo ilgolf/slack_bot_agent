@@ -102,7 +102,9 @@ def test_autopilot_progress_updates_the_initial_status_message(tmp_path: Path) -
         artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
-    agent = SequencedPlanningAgent([_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")])
+    agent = SequencedPlanningAgent(
+        [_write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")]
+    )
     client = FakeSlackClient()
 
     class SayWithTs(RecordingSay):

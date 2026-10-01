@@ -5,6 +5,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
+
+from src.code_work_markers import CODE_INTEGRATION_MARKERS as _CODE_INTEGRATION_MARKERS
+from src.code_work_markers import CODE_MARKERS as _CODE_MARKERS
+from src.code_work_markers import CODE_PLANNING_MARKERS as _CODE_PLANNING_MARKERS
+from src.code_work_markers import PLAN_CONTINUATION_MARKERS as _PLAN_CONTINUATION_MARKERS
+from src.code_work_markers import is_plan_follow_work_request
+from src.thread_context import ThreadWorkContext
 
 
 class RequestIntent(StrEnum):
@@ -25,51 +33,12 @@ class RoutedRequest:
     text: str
     project_name: str | None = None
     confirmation_verb: str | None = None
+    llm_classified: bool = False
 
 
 _MENTION = re.compile(r"<@[^>]+>")
 _CONFIRM = re.compile(r"^(실행|실행해줘|실행합니다|저장|저장해줘|저장합니다)$")
 _CANCEL = re.compile(r"^(취소|취소해줘|취소합니다)$")
-_CODE_MARKERS = (
-    "수정",
-    "변경",
-    "고쳐",
-    "구현",
-    "리팩터",
-    "리팩토",
-    "추가",
-    "테스트",
-    "test",
-    "pytest",
-    "ruff",
-    "mypy",
-    "린트",
-    "타입 검사",
-    "코드",
-    "fix",
-    "implement",
-    "refactor",
-    "update",
-    "run test",
-    "run lint",
-    "typecheck",
-)
-_CODE_PLANNING_MARKERS = (
-    "작업 plan",
-    "작업 계획",
-    "구현 계획",
-    "plan.md에 적은대로",
-    "plan.md에 적은 대로",
-    "개발 진행",
-    "끝까지 진행",
-    "계획 짜",
-    "plan 짜",
-    "plan 만들어",
-    "설계해",
-    "계획 부터 짜",
-    "계획부터 짜",
-)
-_CODE_INTEGRATION_MARKERS = ("github 연동", "gitlab 연동", "api 연동", "연동 작업")
 _ARTIFACT_MARKERS = ("생성", "만들", "정리", "create", "write", "저장 위치")
 _LINEAR_CREATE = ("이슈 생성", "티켓 생성", "이슈 추가", "티켓 추가", "이슈 만들", "티켓 만들")
 _LINEAR_UPDATE = ("이슈 수정", "티켓 수정", "이슈 변경", "티켓 변경", "이슈 업데이트")
@@ -91,6 +60,10 @@ _PROJECT_CODE_CONTEXT = (
 _INQUIRY_MARKERS = ("?", "？", "기반", "학습", "설계한", "설계됐", "지원", "가능")
 
 
+class IntentClassifier(Protocol):
+    def classify(self, text: str, thread_context: ThreadWorkContext | None) -> RequestIntent: ...
+
+
 class RequestRouter:
     """Current-message-only grammar.
 
@@ -98,7 +71,16 @@ class RequestRouter:
     current code request into a Linear workspace operation.
     """
 
-    def route(self, text: str, *, project_name: str | None = None) -> RoutedRequest:
+    def __init__(self, intent_classifier: IntentClassifier | None = None) -> None:
+        self._intent_classifier = intent_classifier
+
+    def route(
+        self,
+        text: str,
+        *,
+        project_name: str | None = None,
+        thread_context: ThreadWorkContext | None = None,
+    ) -> RoutedRequest:
         command = _MENTION.sub("", text).strip()
         normalized = command.casefold()
         command_line = normalized.splitlines()[0] if normalized else ""
@@ -132,6 +114,8 @@ class RequestRouter:
             marker in command_line for marker in _INQUIRY_MARKERS
         ):
             return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
+        if is_plan_follow_work_request(command_line):
+            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
         if any(marker in command_line for marker in _CODE_INTEGRATION_MARKERS) or (
             "linear" in command_line
             and any(marker in command_line for marker in _PROJECT_CODE_CONTEXT)
@@ -148,7 +132,35 @@ class RequestRouter:
             return RoutedRequest(RequestIntent.ARTIFACT_GENERATION, command, project_name)
         if any(marker in normalized for marker in _SYSTEM_MARKERS):
             return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
+        if (
+            thread_context is not None
+            and (thread_context.has_pending_plan or thread_context.last_intent_was_code_work)
+            and any(marker in normalized for marker in _PLAN_CONTINUATION_MARKERS)
+            and (
+                project_name is None
+                or thread_context.project_name is None
+                or project_name == thread_context.project_name
+            )
+        ):
+            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
+        if self._classified_as_code_work(command, thread_context):
+            return RoutedRequest(
+                RequestIntent.CODE_WORK, command, project_name, llm_classified=True
+            )
         return RoutedRequest(RequestIntent.PROJECT_ANALYSIS, command, project_name)
+
+    def _classified_as_code_work(
+        self, command: str, thread_context: ThreadWorkContext | None
+    ) -> bool:
+        if self._intent_classifier is None:
+            return False
+        try:
+            return self._intent_classifier.classify(command, thread_context) is (
+                RequestIntent.CODE_WORK
+            )
+        except Exception:
+            # An unavailable classifier must never break routing.
+            return False
 
 
 def _starts_with_linear_command(command_line: str, markers: tuple[str, ...]) -> bool:

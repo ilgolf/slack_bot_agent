@@ -63,6 +63,34 @@ def test_loop_collects_source_evidence_before_final() -> None:
     assert [step.tool_name for step in trace.steps] == ["list_files", "read_file"]
 
 
+def test_trace_step_records_evidence_refs_for_a_successful_evidence_bearing_call() -> None:
+    """A tool call that produces evidence must show up on the recorded
+    `TraceStep.evidence_refs`, not just in the loop's own `sources` list —
+    otherwise `agent_trace`'s logged `evidence_count` always reads 0 even
+    when real evidence was collected, making the trace useless for
+    diagnosing why a request ended up insufficient-evidence."""
+    registry = ToolRegistry(
+        [
+            definition("list_files", ToolCategory.PROJECT_READ, lambda: ["src"]),
+            definition(
+                "read_file",
+                ToolCategory.PROJECT_READ,
+                lambda relative_path: "content",
+                evidence_arg="relative_path",
+            ),
+        ]
+    )
+    planner = SequencedPlanner(
+        [ToolCall("list_files", {}), ToolCall("read_file", {"relative_path": "src/app.py"})]
+    )
+    trace = AgentTraceRecorder("request-evidence-trace")
+
+    CodeAgentLoop(registry).run(_plan(), planner, trace=trace)
+
+    read_file_step = next(step for step in trace.steps if step.tool_name == "read_file")
+    assert read_file_step.evidence_refs == ("src/app.py",)
+
+
 def test_loop_collects_source_evidence_from_any_tool_named_differently() -> None:
     """The loop must not special-case the literal name `read_file`; evidence
     comes from `ToolOutcome.evidence`, whatever tool produced it."""

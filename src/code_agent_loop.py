@@ -192,6 +192,7 @@ class CodeAgentLoop:
                 outcome=outcome.status,
                 args=call.args,
                 result=outcome.safe_message,
+                evidence_refs=outcome.evidence,
             )
             outcomes.append(outcome)
             tools.append(call.name)

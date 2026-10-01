@@ -80,6 +80,20 @@ def _find_project_name(text: str, project_names: list[str]) -> str | None:
     return next((name for name in project_names if name.casefold() in normalized_text), None)
 
 
+def find_project_name_candidates(text: str, project_resolver: ProjectResolver) -> list[str]:
+    """All distinct configured project names mentioned anywhere in `text`.
+
+    Used to detect when a request relying on thread history — rather than an
+    explicit name in the current message — can't be resolved to one project
+    without guessing.
+    """
+    project_names = sorted(
+        (path.name for path in project_resolver.project_directories()), key=len, reverse=True
+    )
+    normalized_text = text.casefold()
+    return [name for name in project_names if name.casefold() in normalized_text]
+
+
 def _explicit_project_name(text: str) -> str | None:
     match = _EXPLICIT_PROJECT.search(text)
     if match is None or match.group(1).casefold() in _DEICTIC_PROJECTS:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Sequence
 from datetime import timedelta
@@ -24,6 +25,7 @@ from src.execution_workflow import (
     ProjectExecutionTools,
     SkillRegistry,
     VerificationStatus,
+    parse_execution_plan,
     render_code_work_status,
     render_execution_result,
 )
@@ -53,9 +55,12 @@ class PlanningAgent:
 
 
 class InvestigatingPlanningAgent(PlanningAgent):
-    def __init__(self, plan: ExecutionPlan, sources: list[str]) -> None:
+    def __init__(
+        self, plan: ExecutionPlan, sources: list[str], *, summary: str = "조사 완료"
+    ) -> None:
         super().__init__(plan)
         self.sources = sources
+        self.summary = summary
         self.questions: list[str] = []
 
     def analyze(
@@ -63,7 +68,7 @@ class InvestigatingPlanningAgent(PlanningAgent):
     ) -> AnalysisResult:
         del channel_id, thread_ts
         self.questions.append(question)
-        return AnalysisResult(summary="조사 완료", findings=[], sources=self.sources)
+        return AnalysisResult(summary=self.summary, findings=[], sources=self.sources)
 
 
 class StateAwarePlanningAgent(PlanningAgent):
@@ -1317,6 +1322,55 @@ def test_plan_follow_request_does_not_authorize_plan_file_overwrite(tmp_path: Pa
     assert (project / "plan.md").read_text() == "# implementation specification\n"
 
 
+def test_plan_including_plan_md_alongside_real_code_drops_plan_md_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    """A model that puts plan.md in affected_files alongside real code
+    changes (e.g. wanting to note progress in it) must not have the whole
+    request die — plan.md protection is real either way, but killing an
+    otherwise-valid plan over one unauthorized file is excess friction, not
+    extra safety. Drop the protected step and keep the rest."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# spec\n")
+    agent = InvestigatingPlanningAgent(
+        ExecutionPlan(
+            goal="GitHub 연동 구현",
+            project_name="my-project",
+            affected_files=["src/github_client.py", "plan.md"],
+            steps=[
+                ExecutionStep(
+                    action="write_file",
+                    path="src/github_client.py",
+                    content="def create_issue():\n    pass\n",
+                ),
+                ExecutionStep(action="write_file", path="plan.md", content="# done\n"),
+            ],
+            verification_commands=[],
+            risk=ExecutionRisk.MODIFY,
+        ),
+        sources=[],
+    )
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md 보고 코드 구현해",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "코드 실행 계획" in result
+    assert "src/github_client.py" in result
+    # plan.md may still appear as read-only evidence, but never as a change
+    # target: not in the approval scope, and no write step targets it.
+    assert "승인 파일 범위:\n- `src/github_client.py`\n" in result
+    assert "`plan.md` 작성" not in result
+    assert (project / "plan.md").read_text() == "# spec\n"
+
+
 def test_plan_follow_request_rejects_new_root_level_module(tmp_path: Path) -> None:
     project = tmp_path / "my-project"
     source = project / "src" / "linear_tools.py"
@@ -1353,6 +1407,310 @@ def test_plan_follow_request_rejects_new_root_level_module(tmp_path: Path) -> No
     assert result is not None
     assert "src/` 또는 `tests/" in result
     assert not workflow.has_pending("C1", "1.1")
+
+
+def test_plan_follow_up_natural_phrase_investigates_code_and_keeps_plan_read_only(
+    tmp_path: Path,
+) -> None:
+    """"plan.md 보고 작업 진행해" is a natural-language equivalent of
+    "plan.md에 적은대로" — it must trigger the same code-evidence
+    investigation and never let plan.md itself become a write target."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# implementation specification\n")
+    source = project / "src" / "feature.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def feature():\n    return 1\n")
+    plan = ExecutionPlan(
+        goal="기능 구현",
+        project_name="my-project",
+        affected_files=["src/feature.py"],
+        steps=[
+            ExecutionStep(
+                action="write_file",
+                path="src/feature.py",
+                content="def feature():\n    return 2\n",
+            )
+        ],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+    agent = InvestigatingPlanningAgent(plan, sources=["src/feature.py"])
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md 보고 작업 진행해",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "코드 실행 계획" in result
+    assert agent.questions  # code evidence was investigated
+    assert "plan.md" not in plan.affected_files
+
+
+def test_plan_follow_coding_slang_phrase_builds_execution_plan(tmp_path: Path) -> None:
+    """The Slack phrase "plan.md 보고 코딩 진행 ㄱㄱ" must reach plan building
+    instead of being declined by the workflow's own gate."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# implementation specification\n")
+    source = project / "src" / "feature.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def feature():\n    return 1\n")
+    plan = ExecutionPlan(
+        goal="기능 구현",
+        project_name="my-project",
+        affected_files=["src/feature.py"],
+        steps=[
+            ExecutionStep(
+                action="write_file",
+                path="src/feature.py",
+                content="def feature():\n    return 2\n",
+            )
+        ],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+    agent = InvestigatingPlanningAgent(plan, sources=["src/feature.py"])
+
+    result = _workflow(tmp_path).process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md 보고 코딩 진행 ㄱㄱ",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "코드 실행 계획" in result
+
+
+def test_plan_follow_phrase_outside_literal_list_still_protects_plan_md(
+    tmp_path: Path,
+) -> None:
+    """"plan.md 기준으로 구현해줄래?" names plan.md as guidance the same way
+    "plan.md 보고 작업 진행해" does, but is not one of the small set of exact
+    literal phrases — it must still be treated as a plan-follow request
+    (investigate code, keep plan.md read-only) rather than letting plan.md
+    itself become the write target."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# implementation specification\n")
+    source = project / "src" / "feature.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def feature():\n    return 1\n")
+    plan = ExecutionPlan(
+        goal="기능 구현",
+        project_name="my-project",
+        affected_files=["src/feature.py"],
+        steps=[
+            ExecutionStep(
+                action="write_file",
+                path="src/feature.py",
+                content="def feature():\n    return 2\n",
+            )
+        ],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+    agent = InvestigatingPlanningAgent(plan, sources=["src/feature.py"])
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md 기준으로 구현해줄래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "코드 실행 계획" in result
+    assert agent.questions  # code evidence was investigated
+    assert "plan.md" not in plan.affected_files
+    assert (project / "plan.md").read_text() == "# implementation specification\n"
+
+
+def test_plan_confirmation_after_check_phrase_still_protects_plan_md(tmp_path: Path) -> None:
+    """"plan.md 확인 후 구현할래?" means "after checking plan.md, implement
+    [what it describes]" — the same reference-guidance meaning as "plan.md
+    기준으로", just phrased as a checked-then-act sequence."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# implementation specification\n")
+    source = project / "src" / "feature.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def feature():\n    return 1\n")
+    plan = ExecutionPlan(
+        goal="기능 구현",
+        project_name="my-project",
+        affected_files=["src/feature.py"],
+        steps=[
+            ExecutionStep(
+                action="write_file",
+                path="src/feature.py",
+                content="def feature():\n    return 2\n",
+            )
+        ],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+    agent = InvestigatingPlanningAgent(plan, sources=["src/feature.py"])
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md 확인 후 구현할래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "코드 실행 계획" in result
+    assert agent.questions  # code evidence was investigated
+    assert "plan.md" not in plan.affected_files
+    assert (project / "plan.md").read_text() == "# implementation specification\n"
+
+
+def test_plan_document_itself_counts_as_evidence_for_a_brand_new_feature(
+    tmp_path: Path,
+) -> None:
+    """When plan.md describes a feature with zero pre-existing src/tests
+    code (a genuinely new build, not a modification), plan.md's own content
+    — already loaded into planning context — must count as sufficient
+    grounding. The system must not dead-end just because analyze() found
+    no *additional* files to read."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# Brand new GitHub integration feature\n")
+    plan = ExecutionPlan(
+        goal="GitHub 연동 신규 구현",
+        project_name="my-project",
+        affected_files=["src/github_client.py"],
+        steps=[
+            ExecutionStep(
+                action="write_file",
+                path="src/github_client.py",
+                content="def create_issue():\n    pass\n",
+            )
+        ],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+    agent = InvestigatingPlanningAgent(plan, sources=[])
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md 확인 후 구현할래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "코드 실행 계획" in result
+    assert "plan.md" not in plan.affected_files
+
+
+def test_bare_implement_reply_inherits_plan_follow_protection_from_thread(
+    tmp_path: Path,
+) -> None:
+    """A thread that already asked to follow plan.md, then gets a bare
+    "구현해" with no file of its own — the reply must still be treated as
+    a plan-follow request (protect plan.md, accept it as evidence for a
+    brand-new feature) by reading the carried-forward thread context,
+    the same way project name resolution already falls back to it."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# Brand new GitHub integration feature\n")
+    plan = ExecutionPlan(
+        goal="GitHub 연동 신규 구현",
+        project_name="my-project",
+        affected_files=["src/github_client.py"],
+        steps=[
+            ExecutionStep(
+                action="write_file",
+                path="src/github_client.py",
+                content="def create_issue():\n    pass\n",
+            )
+        ],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+    agent = InvestigatingPlanningAgent(plan, sources=[])
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    context.append("C1", "1.1", "my-project plan.md 확인 후 구현할래?")
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="구현해",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "코드 실행 계획" in result
+    assert "plan.md" not in plan.affected_files
+
+
+def test_missing_code_evidence_reports_scope_and_asks_for_a_specific_target(
+    tmp_path: Path,
+) -> None:
+    """A request naming an existing-code path whose investigation finds no
+    source/test file must not end in a generic dead-end — it should surface
+    what was searched and ask for a specific module or file instead. (This
+    is unrelated to plan.md-following, which now treats plan.md itself as
+    evidence — see test_plan_document_itself_counts_as_evidence_for_a_brand_new_feature.)"""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    agent = InvestigatingPlanningAgent(_plan(), sources=[])
+
+    result = _workflow(tmp_path).process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project src/legacy_billing.py 고쳐줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "조사 완료" in result  # the investigation's own summary is surfaced
+    assert "관련 모듈명 또는 파일을 지정" in result
+
+
+def test_missing_code_evidence_does_not_duplicate_an_already_actionable_summary(
+    tmp_path: Path,
+) -> None:
+    """When the investigation's own summary already asks the user to specify
+    a file (as the real analysis agent's insufficient-evidence summary does),
+    the dead-end message must not bolt on a second, redundant ask."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    agent = InvestigatingPlanningAgent(
+        _plan(),
+        sources=[],
+        summary="분석 근거 파일을 읽지 못했습니다. 분석할 파일을 지정해 주세요.",
+    )
+
+    result = _workflow(tmp_path).process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project src/legacy_billing.py 고쳐줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert result.count("지정해") == 1
+    assert ".." not in result
 
 
 def test_context_loader_collects_nested_agents_and_git_state(tmp_path: Path) -> None:
@@ -1664,6 +2022,9 @@ def test_workflow_requires_a_new_confirmation_for_a_plan_outside_approved_scope(
     assert not workflow.has_pending("C1", "1.1")
     assert readme.read_text() == "before\n"
     assert other.read_text() == "other-before\n"
+    # The rejection names the mismatched path so the cause is diagnosable
+    # from Slack or the logs without re-running the model.
+    assert "`other.md`" in response
 
 
 def test_execution_reports_already_applied_files_when_a_later_step_fails(
@@ -1897,3 +2258,24 @@ def test_execution_reports_missing_verification_runner_after_writing(
     assert "실행 환경 오류" in result
     assert "검증 도구를 시작할 수 없습니다 (FileNotFoundError)." in result
     assert readme.read_text() == "after\n"
+
+
+def test_parse_execution_plan_accepts_text_block_list_content() -> None:
+    """Models served through the Responses API return content as a list of
+    blocks, not a plain string."""
+    payload = json.dumps(
+        {
+            "goal": "기능 구현",
+            "project_name": "my-project",
+            "affected_files": ["src/feature.py"],
+            "steps": [
+                {"action": "write_file", "path": "src/feature.py", "content": "x = 1\n"}
+            ],
+            "verification_commands": [],
+            "risk": "modify",
+        }
+    )
+
+    plan = parse_execution_plan([{"type": "text", "text": payload, "annotations": []}])
+
+    assert plan.affected_files == ["src/feature.py"]

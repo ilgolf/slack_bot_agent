@@ -83,7 +83,7 @@ def test_socket_mode_handler_passes_slack_client_for_progress_updates(
     start_socket_mode(
         settings,
         thread_context=ThreadContextStore(root=tmp_path / "context"),
-        agent=SequencedPlanningAgent([_write_plan("a.txt", "A\n")]),  # type: ignore[arg-type]
+        agent=SequencedPlanningAgent([_write_plan("src/a.txt", "A\n")]),  # type: ignore[arg-type]
     )
     handlers["app_mention"](
         event={"channel": "C1", "ts": "1.1", "text": "my-project plan.md 기준으로 끝까지 진행해"},

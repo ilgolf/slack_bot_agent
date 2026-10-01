@@ -41,6 +41,72 @@ class PlanningAgent:
         )
 
 
+class InvestigatingPlanningAgent(PlanningAgent):
+    """A planning agent that can also investigate code, for plan-follow
+    requests that require evidence before a plan is created."""
+
+    def __init__(self, sources: list[str]) -> None:
+        self.sources = sources
+
+    def analyze(
+        self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
+    ) -> AnalysisResult:
+        del question, channel_id, thread_ts
+        return AnalysisResult(summary="조사 완료", findings=[], sources=self.sources)
+
+    def create_execution_plan(
+        self, request: str, context: object, skills: object, existing_files: object
+    ) -> ExecutionPlan:
+        del request, skills, existing_files
+        return ExecutionPlan(
+            goal="기능 구현",
+            project_name=context.project_name,  # type: ignore[attr-defined]
+            affected_files=["src/feature.py"],
+            steps=[
+                ExecutionStep(
+                    action="write_file",
+                    path="src/feature.py",
+                    content="def feature():\n    return 2\n",
+                )
+            ],
+            verification_commands=[],
+            risk=ExecutionRisk.MODIFY,
+        )
+
+
+def test_fresh_thread_plan_follow_up_phrase_reaches_code_work_without_prior_context(
+    tmp_path: Path,
+) -> None:
+    """"plan.md 보고 작업 진행해줘" names plan.md directly, so it must reach
+    the execution workflow even as the very first message in a brand-new
+    thread — unlike the vague pronoun phrases ("이 계획 진행해"), it doesn't
+    need a prior pending or completed code-work turn to disambiguate it."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# spec\n")
+    source = project / "src" / "feature.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def feature():\n    return 1\n")
+    coordinator = RequestCoordinator(
+        router=RequestRouter(),
+        execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
+        artifact_workflow=ArtifactGenerationWorkflow(),
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = InvestigatingPlanningAgent(sources=["src/feature.py"])
+
+    _, response = coordinator.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project plan.md 보고 작업 진행해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    assert "코드 실행 계획" in response
+
+
 def test_execute_confirmation_consumes_pending_code_plan(tmp_path: Path) -> None:
     project = tmp_path / "my-project"
     project.mkdir()
@@ -234,6 +300,107 @@ def test_bare_project_name_reply_resumes_a_stalled_code_work_request(tmp_path: P
     )
 
     assert "코드 실행 계획" in second
+
+
+def test_completed_code_work_lets_natural_continuation_phrase_start_new_plan(
+    tmp_path: Path,
+) -> None:
+    """After a code-work plan has already run to completion in this thread,
+    a natural continuation phrase with none of the hard-coded markers must
+    still reach the execution workflow instead of falling to analysis."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    readme = project / "README.md"
+    readme.write_text("before\n")
+    coordinator = RequestCoordinator(
+        router=RequestRouter(),
+        execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
+        artifact_workflow=ArtifactGenerationWorkflow(),
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = PlanningAgent()
+
+    coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="my-project README.md 수정해줘",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+    coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="실행",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+    assert not coordinator.execution_workflow.has_pending("C1", "1.1")
+
+    _, follow_up = coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="위 작업 이어서 해줘",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+
+    assert "코드 실행 계획" in follow_up
+
+
+class MultiProjectPlanningAgent:
+    """Returns a plan for whichever project the workflow actually resolved,
+    unlike `PlanningAgent`'s single hard-coded project name."""
+
+    def create_execution_plan(
+        self, request: str, context: object, skills: object, existing_files: object
+    ) -> ExecutionPlan:
+        del request, skills, existing_files
+        return ExecutionPlan(
+            goal="README 수정",
+            project_name=context.project_name,  # type: ignore[attr-defined]
+            affected_files=["README.md"],
+            steps=[ExecutionStep(action="write_file", path="README.md", content="after\n")],
+            verification_commands=[],
+            risk=ExecutionRisk.MODIFY,
+        )
+
+
+def test_ambiguous_project_after_multiple_completed_plans_asks_for_choice(
+    tmp_path: Path,
+) -> None:
+    """Two different projects each got a completed code-work turn earlier in
+    this thread. A natural continuation phrase naming neither must not
+    silently guess one — it should list both candidates instead."""
+    for name in ("project-a", "project-b"):
+        project = tmp_path / name
+        project.mkdir()
+        (project / "README.md").write_text("before\n")
+    coordinator = RequestCoordinator(
+        router=RequestRouter(),
+        execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
+        artifact_workflow=ArtifactGenerationWorkflow(),
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = MultiProjectPlanningAgent()
+
+    coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="project-a README.md 수정해줘",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+    coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="실행",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+    coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="project-b README.md 수정해줘",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+    coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="실행",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+
+    _, follow_up = coordinator.process(
+        channel_id="C1", thread_ts="1.1", text="위 작업 이어서 해줘",
+        thread_context=context, agent=agent,  # type: ignore[arg-type]
+    )
+
+    assert "project-a" in follow_up
+    assert "project-b" in follow_up
+    assert "코드 실행 계획" not in follow_up
 
 
 def test_trace_summary_uses_current_thread_key_from_thread_trace_store(tmp_path: Path) -> None:

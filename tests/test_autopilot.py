@@ -110,7 +110,9 @@ def test_autopilot_runs_next_unchecked_item_after_a_verified_item(tmp_path: Path
     project = tmp_path / "my-project"
     project.mkdir()
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
-    agent = SequencedPlanningAgent([_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")])
+    agent = SequencedPlanningAgent(
+        [_write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")]
+    )
     workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
 
     workflow.process(
@@ -121,8 +123,8 @@ def test_autopilot_runs_next_unchecked_item_after_a_verified_item(tmp_path: Path
         agent=agent,
     )
 
-    assert (project / "a.txt").read_text() == "A\n"
-    assert (project / "b.txt").read_text() == "B\n"
+    assert (project / "src" / "a.txt").read_text() == "A\n"
+    assert (project / "src" / "b.txt").read_text() == "B\n"
     assert agent.calls == 2
     assert next_unchecked_item((project / "plan.md").read_text()) is None
 
@@ -131,7 +133,9 @@ def test_autopilot_reports_all_done_when_no_unchecked_items_remain(tmp_path: Pat
     project = tmp_path / "my-project"
     project.mkdir()
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
-    agent = SequencedPlanningAgent([_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")])
+    agent = SequencedPlanningAgent(
+        [_write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")]
+    )
     workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
 
     result = workflow.process(
@@ -154,9 +158,9 @@ def test_autopilot_stops_and_reports_failed_item_when_verification_fails(
     project.mkdir()
     (project / "pyproject.toml").write_text("")
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
-    failing = _write_plan("a.txt", "A\n")
+    failing = _write_plan("src/a.txt", "A\n")
     failing.verification_commands.append("run_tests")
-    agent = SequencedPlanningAgent([failing, _write_plan("b.txt", "B\n")])
+    agent = SequencedPlanningAgent([failing, _write_plan("src/b.txt", "B\n")])
     monkeypatch.setattr(
         ProjectExecutionTools,
         "run_check",
@@ -175,7 +179,7 @@ def test_autopilot_stops_and_reports_failed_item_when_verification_fails(
     assert result is not None
     assert "중단" in result
     assert "first" in result
-    assert not (project / "b.txt").exists()
+    assert not (project / "src" / "b.txt").exists()
     assert next_unchecked_item((project / "plan.md").read_text()) == "first"
 
 
@@ -185,7 +189,7 @@ def test_autopilot_rejects_protected_meta_file_plan_and_stops(tmp_path: Path) ->
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
     (project / "CLAUDE.md").write_text("rules\n")
     agent = SequencedPlanningAgent(
-        [_write_plan("CLAUDE.md", "hijacked\n"), _write_plan("b.txt", "B\n")]
+        [_write_plan("CLAUDE.md", "hijacked\n"), _write_plan("src/b.txt", "B\n")]
     )
     workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
 
@@ -200,7 +204,7 @@ def test_autopilot_rejects_protected_meta_file_plan_and_stops(tmp_path: Path) ->
     assert result is not None
     assert "중단" in result
     assert (project / "CLAUDE.md").read_text() == "rules\n"
-    assert not (project / "b.txt").exists()
+    assert not (project / "src" / "b.txt").exists()
     assert agent.calls == 1
 
 
@@ -209,7 +213,7 @@ def test_autopilot_rejects_path_outside_project_and_stops(tmp_path: Path) -> Non
     project.mkdir()
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
     agent = SequencedPlanningAgent(
-        [_write_plan("../outside.txt", "x\n"), _write_plan("b.txt", "B\n")]
+        [_write_plan("../outside.txt", "x\n"), _write_plan("src/b.txt", "B\n")]
     )
     workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
 
@@ -232,7 +236,11 @@ def test_autopilot_stops_at_max_items_and_reports_remaining(tmp_path: Path) -> N
     project.mkdir()
     (project / "plan.md").write_text("- [ ] one\n- [ ] two\n- [ ] three\n")
     agent = SequencedPlanningAgent(
-        [_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n"), _write_plan("c.txt", "C\n")]
+        [
+            _write_plan("src/a.txt", "A\n"),
+            _write_plan("src/b.txt", "B\n"),
+            _write_plan("src/c.txt", "C\n"),
+        ]
     )
     workflow = ExecutionWorkflow(
         project_resolver=ProjectResolver(root=tmp_path), max_autopilot_items=2
@@ -249,7 +257,7 @@ def test_autopilot_stops_at_max_items_and_reports_remaining(tmp_path: Path) -> N
     assert result is not None
     assert "최대 2개" in result
     assert "남은 항목 1개" in result
-    assert not (project / "c.txt").exists()
+    assert not (project / "src" / "c.txt").exists()
     assert agent.calls == 2
 
 
@@ -281,7 +289,7 @@ def test_cancel_during_autopilot_stops_after_current_item(tmp_path: Path) -> Non
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
     workflow_ref: list[ExecutionWorkflow] = []
     agent = CancellingPlanningAgent(
-        [_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")], workflow_ref
+        [_write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")], workflow_ref
     )
     workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
     workflow_ref.append(workflow)
@@ -298,8 +306,8 @@ def test_cancel_during_autopilot_stops_after_current_item(tmp_path: Path) -> Non
     assert "취소" in agent.cancel_reply
     assert result is not None
     assert "취소" in result
-    assert (project / "a.txt").read_text() == "A\n"
-    assert not (project / "b.txt").exists()
+    assert (project / "src" / "a.txt").read_text() == "A\n"
+    assert not (project / "src" / "b.txt").exists()
     assert agent.calls == 1
 
 
@@ -307,7 +315,9 @@ def test_autopilot_reports_progress_after_each_completed_item(tmp_path: Path) ->
     project = tmp_path / "my-project"
     project.mkdir()
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
-    agent = SequencedPlanningAgent([_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")])
+    agent = SequencedPlanningAgent(
+        [_write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")]
+    )
     workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
     progress: list[str] = []
 
@@ -327,7 +337,9 @@ def test_coordinator_forwards_progress_to_code_work_workflow(tmp_path: Path) -> 
     project = tmp_path / "my-project"
     project.mkdir()
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
-    agent = SequencedPlanningAgent([_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")])
+    agent = SequencedPlanningAgent(
+        [_write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")]
+    )
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
@@ -352,7 +364,9 @@ def test_autopilot_summary_lists_each_item_with_its_changed_files(tmp_path: Path
     project = tmp_path / "my-project"
     project.mkdir()
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
-    agent = SequencedPlanningAgent([_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")])
+    agent = SequencedPlanningAgent(
+        [_write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")]
+    )
     workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
 
     result = workflow.process(
@@ -365,8 +379,8 @@ def test_autopilot_summary_lists_each_item_with_its_changed_files(tmp_path: Path
 
     assert result is not None
     assert "전체 완료 (2/2개 항목)" in result
-    assert "- ✅ first: `a.txt`" in result
-    assert "- ✅ second: `b.txt`" in result
+    assert "- ✅ first: `src/a.txt`" in result
+    assert "- ✅ second: `src/b.txt`" in result
 
 
 def test_autopilot_summary_includes_total_diff_and_per_item_checks(
@@ -376,7 +390,7 @@ def test_autopilot_summary_includes_total_diff_and_per_item_checks(
     project.mkdir()
     (project / "pyproject.toml").write_text("")
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
-    first, second = _write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")
+    first, second = _write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")
     first.verification_commands.append("run_tests")
     second.verification_commands.append("run_tests")
     agent = SequencedPlanningAgent([first, second])
@@ -426,7 +440,7 @@ def test_duplicate_autopilot_request_in_same_thread_is_ignored(tmp_path: Path) -
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
     workflow_ref: list[ExecutionWorkflow] = []
     agent = DuplicateRequestingPlanningAgent(
-        [_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")], workflow_ref
+        [_write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")], workflow_ref
     )
     workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
     workflow_ref.append(workflow)
@@ -450,7 +464,7 @@ def test_autopilot_summary_marks_items_that_ran_without_verification(tmp_path: P
     project = tmp_path / "my-project"
     project.mkdir()
     (project / "plan.md").write_text("- [ ] first\n")
-    agent = SequencedPlanningAgent([_write_plan("a.txt", "A\n")])
+    agent = SequencedPlanningAgent([_write_plan("src/a.txt", "A\n")])
     workflow = ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path))
 
     result = workflow.process(
@@ -462,4 +476,4 @@ def test_autopilot_summary_marks_items_that_ran_without_verification(tmp_path: P
     )
 
     assert result is not None
-    assert "- ✅ first: `a.txt` (검증 없음)" in result
+    assert "- ✅ first: `src/a.txt` (검증 없음)" in result
