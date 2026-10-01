@@ -75,3 +75,51 @@ def test_linear_request_bypasses_project_analysis_when_not_configured(tmp_path: 
 
     assert "LINEAR_API_KEY" in say.calls[1]["text"]
     assert "가짜 분석" not in say.calls[1]["text"]
+
+
+class FakeSlackClient:
+    def __init__(self) -> None:
+        self.updates: list[dict[str, Any]] = []
+
+    def chat_update(self, **kwargs: Any) -> None:
+        self.updates.append(kwargs)
+
+
+def test_autopilot_progress_updates_the_initial_status_message(tmp_path: Path) -> None:
+    from src.artifact_generation import ArtifactGenerationWorkflow
+    from src.execution_workflow import ExecutionWorkflow
+    from src.project_resolver import ProjectResolver
+    from src.request_coordinator import RequestCoordinator
+    from src.request_router import RequestRouter
+    from tests.test_autopilot import SequencedPlanningAgent, _write_plan
+
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
+    coordinator = RequestCoordinator(
+        router=RequestRouter(),
+        execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
+        artifact_workflow=ArtifactGenerationWorkflow(),
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
+    agent = SequencedPlanningAgent([_write_plan("a.txt", "A\n"), _write_plan("b.txt", "B\n")])
+    client = FakeSlackClient()
+
+    class SayWithTs(RecordingSay):
+        def __call__(self, **kwargs: Any) -> dict[str, str]:
+            super().__call__(**kwargs)
+            return {"ts": "2.2"}
+
+    handle_app_mention(
+        {"channel": "C1", "ts": "1.1", "text": "my-project plan.md 기준으로 끝까지 진행해"},
+        SayWithTs(),
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,  # type: ignore[arg-type]
+        coordinator=coordinator,
+        client=client,
+    )
+
+    assert client.updates == [
+        {"channel": "C1", "ts": "2.2", "text": "🔄 자동 진행 1/2 완료"},
+        {"channel": "C1", "ts": "2.2", "text": "🔄 자동 진행 2/2 완료"},
+    ]

@@ -71,7 +71,7 @@ def test_execute_confirmation_consumes_pending_code_plan(tmp_path: Path) -> None
     )
 
     assert "코드 실행 계획" in preview
-    assert "구현 및 검증 완료" in result
+    assert "구현 완료 (자동 검증 없음)" in result
     assert readme.read_text() == "after\n"
 
 
@@ -107,7 +107,7 @@ def test_design_question_preserves_pending_code_plan(tmp_path: Path) -> None:
         channel_id="C1", thread_ts="1.1", text="실행",
         thread_context=context, agent=agent,  # type: ignore[arg-type]
     )
-    assert "구현 및 검증 완료" in execution
+    assert "구현 완료 (자동 검증 없음)" in execution
     assert readme.read_text() == "after\n"
 
 

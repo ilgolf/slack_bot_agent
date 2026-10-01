@@ -84,3 +84,9 @@ def test_question_form_plan_document_request_is_code_work() -> None:
     )
 
     assert routed.intent is RequestIntent.CODE_WORK
+
+
+def test_plan_autopilot_request_is_code_work() -> None:
+    routed = RequestRouter().route("@Goodra-bot my-project plan.md 기준으로 끝까지 진행해")
+
+    assert routed.intent is RequestIntent.CODE_WORK

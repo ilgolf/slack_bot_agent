@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from src.config import Settings
 from src.project_resolver import ProjectResolver
-from src.tools import list_files, list_projects, read_file
+from src.tools import find_files, list_files, list_projects, read_file
 
 if TYPE_CHECKING:
     from src.langchain_agent import LangChainAnalysisAgent
@@ -74,7 +74,7 @@ def get_agent(provider: str, *, settings: Settings) -> AnalysisAgent | LangChain
         return LangChainAnalysisAgent(
             chat_model=anthropic_chat_model,
             project_resolver=project_resolver,
-            tools=[list_projects, read_file, list_files],
+            tools=[list_projects, read_file, list_files, find_files],
             max_tool_iterations=settings.agent_max_tool_iterations,
         )
 
@@ -90,7 +90,7 @@ def get_agent(provider: str, *, settings: Settings) -> AnalysisAgent | LangChain
         return LangChainAnalysisAgent(
             chat_model=openai_chat_model,
             project_resolver=project_resolver,
-            tools=[list_projects, read_file, list_files],
+            tools=[list_projects, read_file, list_files, find_files],
             max_tool_iterations=settings.agent_max_tool_iterations,
         )
 

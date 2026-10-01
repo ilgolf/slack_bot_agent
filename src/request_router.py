@@ -61,6 +61,7 @@ _CODE_PLANNING_MARKERS = (
     "plan.md에 적은대로",
     "plan.md에 적은 대로",
     "개발 진행",
+    "끝까지 진행",
     "계획 짜",
     "plan 짜",
     "plan 만들어",
