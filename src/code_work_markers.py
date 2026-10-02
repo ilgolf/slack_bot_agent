@@ -60,6 +60,19 @@ _OTHER_PLANNING_MARKERS = (
     "계획부터 짜",
 )
 
+# Phrases asking to author a plan document ("plan 부터 짜볼래?"). Matched against
+# the current message only; a plan-follow request is never an authoring request.
+PLAN_AUTHORING_MARKERS = (
+    "plan 짜",
+    "plan 부터 짜",
+    "plan부터 짜",
+    "plan 만들어",
+    "계획 짜",
+    "계획 부터 짜",
+    "계획부터 짜",
+    "계획 세워",
+)
+
 CODE_PLANNING_MARKERS = _OTHER_PLANNING_MARKERS + PLAN_FOLLOW_MARKERS
 
 # Vague phrases ("이 계획", "위 작업") that only mean code work in context —

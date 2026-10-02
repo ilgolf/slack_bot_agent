@@ -30,6 +30,7 @@ from src.code_work_markers import (
     CODE_INTEGRATION_MARKERS,
     CODE_MARKERS,
     CODE_PLANNING_MARKERS,
+    PLAN_AUTHORING_MARKERS,
     PLAN_CONTINUATION_MARKERS,
     is_plan_follow_work_request,
 )
@@ -771,6 +772,14 @@ class ExecutionWorkflow:
             user_writable_paths = [
                 path for path in explicit_target_paths if not _is_protected_meta_path(path)
             ]
+        # Asking for a plan to be written authorizes plan.md as a write target.
+        # Every other proposed file still follows the usual rules. Judged from this
+        # message alone, never thread context.
+        plan_authoring = not plan_follow_request and any(
+            marker in command_text.casefold() for marker in PLAN_AUTHORING_MARKERS
+        )
+        if plan_authoring:
+            user_writable_paths = list(dict.fromkeys([*user_writable_paths, "plan.md"]))
         investigator = getattr(agent, "analyze", None)
         # An explicitly named file is already a bounded, first-party source
         # for the planner. Do not make a plan-file creation/edit request fail

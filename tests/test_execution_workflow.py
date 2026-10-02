@@ -1253,7 +1253,7 @@ def test_workflow_rejects_a_model_proposed_edit_to_a_project_control_file(
     result = workflow.process(
         channel_id="C1",
         thread_ts="1.1",
-        text="my-project GitHub 연동 작업 plan 부터 짜볼래?",
+        text="my-project GitHub 연동 작업 정리해줘",
         thread_context=ThreadContextStore(root=tmp_path / "context"),
         agent=agent,
     )
@@ -2400,3 +2400,60 @@ def test_runner_failure_while_planning_fails_safely_without_changing_files(
     assert "SECRET" not in response
     assert state.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.FAILED
     assert (project / "README.md").read_text() == "before\n"
+
+
+def _plan_document_agent() -> PlanningAgent:
+    steps = [ExecutionStep(action="write_file", path="plan.md", content="# 새 계획\n")]
+    files = ["plan.md"]
+    return PlanningAgent(
+        ExecutionPlan(
+            goal="계획 작성",
+            project_name="my-project",
+            affected_files=files,
+            steps=steps,
+            verification_commands=[],
+            risk=ExecutionRisk.MODIFY,
+        )
+    )
+
+
+def test_plan_authoring_request_may_target_plan_md_and_returns_a_preview(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# 기존 계획\n")
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project GitHub 연동 작업 plan 부터 짜볼래?",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=_plan_document_agent(),
+    )
+
+    assert result is not None
+    assert workflow.has_pending("C1", "1.1")
+    assert (project / "plan.md").read_text() == "# 기존 계획\n"
+
+
+def test_plan_authoring_wording_only_in_thread_context_does_not_unlock_plan_md(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "plan.md").write_text("# 기존 계획\n")
+    context = ThreadContextStore(root=tmp_path / "context")
+    context.append("C1", "1.1", "my-project GitHub 연동 작업 plan 부터 짜볼래?")
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project GitHub 연동 작업 정리해줘",
+        thread_context=context,
+        agent=_plan_document_agent(),
+    )
+
+    assert result is not None
+    assert not workflow.has_pending("C1", "1.1")
+    assert (project / "plan.md").read_text() == "# 기존 계획\n"
