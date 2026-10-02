@@ -1,5 +1,5 @@
 """Slack Bolt integration: this project runs its own separate Slack app (own bot
-token/signing secret), so it can run side by side with v1 during migration (see
+token), so it can run side by side with v1 during migration (see
 plan.md's design summary).
 """
 
@@ -15,8 +15,12 @@ from src.config import Settings
 from src.slack_app import SlackConfigError, build_slack_app, start_socket_mode
 
 
-def test_build_slack_app_returns_bolt_app_when_configured() -> None:
-    settings = Settings(slack_bot_token="xoxb-fake", slack_signing_secret="shhh")
+def test_build_slack_app_needs_only_a_bot_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
+    settings = Settings(slack_bot_token="xoxb-fake")
 
     app = build_slack_app(settings)
 
@@ -24,7 +28,7 @@ def test_build_slack_app_returns_bolt_app_when_configured() -> None:
 
 
 def test_build_slack_app_raises_when_credentials_missing() -> None:
-    settings = Settings(slack_bot_token=None, slack_signing_secret=None)
+    settings = Settings(slack_bot_token=None)
 
     with pytest.raises(SlackConfigError):
         build_slack_app(settings)
