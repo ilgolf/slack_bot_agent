@@ -41,11 +41,11 @@
 - [x] 하네스 파일 초안 작성: 기능 목록, `실행`/`취소`/`폐기` 의미, 지원하지 않는 것(파일 생성 등), 모르면 모른다고 답하기
 
 ### C. 라우터 축소 (동작 유지 확인 후 삭제)
-- [ ] 의도 분류를 `제어 명령 / 스레드 요약 / Linear / 코드 작업 / 일반 답변` 으로 정하는 입력 표를 테스트로 먼저 고정한다 (기존 `test_request_router`의 대표 사례를 표로 옮김)
-- [ ] 코드 작업·스레드 요약·Linear 여부를 LLM 분류기(`RunnerIntentClassifier` 확장) 한 곳에서 정하고, 분류 실패·불명확은 읽기 전용 일반 답변으로 간다 (fail-safe)
-- [ ] 키워드 목록(`_CODE_MARKERS`·`_CODE_PLANNING_MARKERS`·`_CODE_INTEGRATION_MARKERS`·`_INQUIRY_MARKERS`·`_SYSTEM_MARKERS`·`_PROJECT_CODE_CONTEXT` 등)과 `code_work_markers.py`의 쓰이지 않게 된 부분을 지운다 (제어 명령 정규식·`폐기`·`trace 요약`은 유지)
-- [ ] `SYSTEM_INQUIRY` 의도와 `system_inquiry.py` 고정 문구를 하네스 답변으로 대체해 지운다 (B의 비교 테스트가 통과한 뒤)
-- [ ] 부수효과 게이트가 그대로임을 확인한다: LLM이 `linear_mutation`/`code_work`라고 해도 `실행` 전에는 아무것도 쓰지 않고, 분류기가 틀려도 읽기 전용 경로로만 빠진다
+- [x] 의도 분류를 `제어 명령 / 스레드 요약 / Linear / 코드 작업 / 일반 답변` 으로 정하는 입력 표를 테스트로 먼저 고정한다 (기존 `test_request_router`의 대표 사례를 표로 옮김)
+- [x] 코드 작업·스레드 요약·Linear 여부를 LLM 분류기(`RunnerIntentClassifier` 확장) 한 곳에서 정하고, 분류 실패·불명확은 읽기 전용 일반 답변으로 간다 (fail-safe) — 스레드 요약 문형과 `Linear 이슈 조회/생성/수정…` 고정 문법은 코드에 남겼다(키워드 추측이 아니라 고정 명령). 그 밖은 분류기가 정한다.
+- [x] 키워드 목록(`_CODE_MARKERS`·`_CODE_PLANNING_MARKERS`·`_CODE_INTEGRATION_MARKERS`·`_INQUIRY_MARKERS`·`_SYSTEM_MARKERS`·`_PROJECT_CODE_CONTEXT` 등)과 `code_work_markers.py`의 쓰이지 않게 된 부분을 지운다 (제어 명령 정규식·`폐기`·`trace 요약`은 유지) — 라우터의 키워드 목록은 모두 지웠다. 다만 `code_work_markers.py`는 `ExecutionWorkflow`의 내부 확인 단계가 아직 쓰므로 남긴다 (운영에서는 LLM이 code_work로 분류하면 `trusted_code_work`로 그 단계를 건너뛰므로 사실상 `폐기`·직접 호출 경로 전용이다). 정리는 후속 후보.
+- [x] `SYSTEM_INQUIRY` 의도와 `system_inquiry.py` 고정 문구를 하네스 답변으로 대체해 지운다 (B의 비교 테스트가 통과한 뒤) — 라우터 쪽 삭제는 `d999049`에 `system_inquiry.py` 삭제와 함께 한 커밋으로 들어갔다.
+- [x] 부수효과 게이트가 그대로임을 확인한다: LLM이 `linear_mutation`/`code_work`라고 해도 `실행` 전에는 아무것도 쓰지 않고, 분류기가 틀려도 읽기 전용 경로로만 빠진다 — 분류기가 `code_work`라고 해도 미리보기만 나오고 파일은 그대로임을 코디네이터 테스트로 확인했다. 분류기는 `code_work` 외 의도를 만들 수 없다는 기존 테스트도 유지.
 
 ### D. 마무리
 - [ ] README·`.env.example`에 바뀐 동작(키워드 라우터 없음, `harness/` 위치)을 적는다

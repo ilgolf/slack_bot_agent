@@ -11,7 +11,7 @@ from src.execution_workflow import ExecutionPlan, ExecutionRisk, ExecutionStep, 
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
-from src.request_router import RequestRouter
+from src.request_router import RequestIntent, RequestRouter
 from src.thread_context import ThreadContextStore
 from tests.router_doubles import CodeWorkWords
 
@@ -377,3 +377,36 @@ def test_trace_summary_uses_current_thread_key_from_thread_trace_store(tmp_path:
 
     assert "read_file" in own_summary
     assert "기록된 실행이 없습니다" in other_summary
+
+
+def test_a_classifier_verdict_of_code_work_only_previews_a_plan_until_execute(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    readme = project / "README.md"
+    readme.write_text("before\n")
+
+    class AlwaysCodeWork:
+        def classify(self, text: str, thread_context: object) -> RequestIntent:
+            return RequestIntent.CODE_WORK
+
+    coordinator = RequestCoordinator(
+        router=RequestRouter(intent_classifier=AlwaysCodeWork()),
+        execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
+    context = ThreadContextStore(root=tmp_path / "context")
+    agent = PlanningAgent()
+
+    _, preview = coordinator.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 이거 좀 손봐줘",
+        thread_context=context,
+        agent=agent,  # type: ignore[arg-type]
+    )
+
+    assert "`실행`" in preview
+    assert readme.read_text() == "before\n"
+    assert coordinator.execution_workflow.has_pending("C1", "1.1")
