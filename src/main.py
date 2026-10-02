@@ -70,9 +70,6 @@ def create_app(
                 thread_context=thread_context,
                 agent=agent,
                 run_store=run_store,
-                artifact_workflow=artifact_workflow,
-                execution_workflow=execution_workflow,
-                linear_workflow=linear_workflow,
                 coordinator=coordinator,
             )
 

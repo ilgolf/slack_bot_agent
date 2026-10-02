@@ -1,4 +1,4 @@
-"""handle_app_mention: runs dispatch_command from a Slack app_mention event and
+"""handle_app_mention: routes a Slack app_mention event through the coordinator and
 replies in-thread via `say`.
 """
 
@@ -8,12 +8,29 @@ from pathlib import Path
 from typing import Any
 
 from src.agent import FakeAnalysisAgent
+from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings
 from src.dispatch import render_result
+from src.execution_workflow import ExecutionWorkflow
 from src.linear_workflow import LinearIntegrationWorkflow
+from src.project_resolver import ProjectResolver
+from src.request_coordinator import RequestCoordinator
+from src.request_router import RequestRouter
 from src.run_state import ThreadRunState, ThreadRunStore
 from src.slack_app import handle_app_mention
 from src.thread_context import ThreadContextStore
+
+
+def _coordinator(
+    tmp_path: Path, *, linear_workflow: LinearIntegrationWorkflow | None = None
+) -> RequestCoordinator:
+    return RequestCoordinator(
+        router=RequestRouter(),
+        execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
+        artifact_workflow=ArtifactGenerationWorkflow(),
+        linear_workflow=linear_workflow
+        or LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
 
 
 class RecordingSay:
@@ -35,6 +52,7 @@ def test_handle_app_mention_replies_in_thread(tmp_path: Path) -> None:
         say,
         thread_context=thread_context,
         agent=agent,
+        coordinator=_coordinator(tmp_path),
     )
 
     assert len(say.calls) == 2
@@ -57,6 +75,7 @@ def test_handle_app_mention_ignores_a_duplicate_event(tmp_path: Path) -> None:
             thread_context=thread_context,
             agent=FakeAnalysisAgent(),
             run_store=run_store,
+            coordinator=_coordinator(tmp_path),
         )
 
     assert len(say.calls) == 2
@@ -70,7 +89,7 @@ def test_linear_request_bypasses_project_analysis_when_not_configured(tmp_path: 
         say,
         thread_context=ThreadContextStore(root=tmp_path / "context"),
         agent=FakeAnalysisAgent(),
-        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+        coordinator=_coordinator(tmp_path),
     )
 
     assert "LINEAR_API_KEY" in say.calls[1]["text"]
@@ -86,11 +105,6 @@ class FakeSlackClient:
 
 
 def test_autopilot_progress_updates_the_initial_status_message(tmp_path: Path) -> None:
-    from src.artifact_generation import ArtifactGenerationWorkflow
-    from src.execution_workflow import ExecutionWorkflow
-    from src.project_resolver import ProjectResolver
-    from src.request_coordinator import RequestCoordinator
-    from src.request_router import RequestRouter
     from tests.test_autopilot import SequencedPlanningAgent, _write_plan
 
     project = tmp_path / "my-project"
@@ -128,11 +142,6 @@ def test_autopilot_progress_updates_the_initial_status_message(tmp_path: Path) -
 
 
 def test_thread_summary_request_shows_a_thread_summary_status(tmp_path: Path) -> None:
-    from src.artifact_generation import ArtifactGenerationWorkflow
-    from src.execution_workflow import ExecutionWorkflow
-    from src.project_resolver import ProjectResolver
-    from src.request_coordinator import RequestCoordinator
-    from src.request_router import RequestRouter
     from src.slack_thread import ThreadMessage
     from src.thread_summary_workflow import ThreadSummaryWorkflow
 
