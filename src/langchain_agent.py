@@ -26,7 +26,6 @@ from src.agent import (
     insufficient_evidence_result,
 )
 from src.agent_trace import AgentTraceRecorder, ThreadTraceStore
-from src.artifact_generation import ArtifactDraft, ArtifactDraftCreator
 from src.code_agent_loop import AgentPlan, CodeAgentLoop, FinalAnswer, FinalStatus
 from src.code_agent_planner import LangChainNextActionPlanner
 from src.code_plan_prompts import (
@@ -150,7 +149,7 @@ def _wrap_project_bound_tool(
     return wrapper_one_arg_optional
 
 
-class LangChainAnalysisAgent(ArtifactDraftCreator):
+class LangChainAnalysisAgent:
     def __init__(
         self,
         *,
@@ -330,52 +329,6 @@ class LangChainAnalysisAgent(ArtifactDraftCreator):
         )
         response = self.chat_model.invoke([HumanMessage(content=prompt)])
         return _parse_analysis_result(response.content, sources=[request.relative_path])
-
-    def create_artifact_draft(self, thread_context: str, destination: Path) -> ArtifactDraft:
-        """Ask the LLM to shape a file draft from explicit thread-context facts."""
-        is_table = destination.suffix.casefold() in {".csv", ".xlsx"}
-        required_shape = (
-            '{"kind": "table", "headers": ["..."], "rows": [{"header": "value"}]}'
-            if is_table
-            else '{"kind": "text", "content": "..."}'
-        )
-        prompt = (
-            f"사용자가 요청한 출력 파일은 {destination.name}입니다. 다음 Slack 스레드 맥락만 "
-            "근거로 파일 초안을 만드세요. 없는 사실·이메일·코드·값을 추측하지 마세요. "
-            f"코드 블록 없이 JSON만 반환하세요: {required_shape}\n\n"
-            f"스레드 맥락:\n{thread_context}"
-        )
-        response = self.chat_model.invoke([HumanMessage(content=prompt)])
-        text = content_text(response.content).strip()
-        fenced_json = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
-        if fenced_json:
-            text = fenced_json.group(1)
-        try:
-            payload = json.loads(text.replace("\u00a0", " "))
-            kind = payload["kind"]
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            raise AnalysisAgentError("model reply is not a valid artifact draft") from exc
-
-        if kind == "text" and isinstance(payload.get("content"), str):
-            return ArtifactDraft(destination=destination, kind="text", content=payload["content"])
-        headers = payload.get("headers")
-        rows = payload.get("rows")
-        if kind == "table" and isinstance(headers, list) and isinstance(rows, list):
-            if not all(isinstance(header, str) for header in headers) or not all(
-                isinstance(row, dict) for row in rows
-            ):
-                raise AnalysisAgentError("table draft has an invalid shape")
-            normalized_rows = [
-                {str(key): str(value) for key, value in row.items() if value is not None}
-                for row in rows
-            ]
-            return ArtifactDraft(
-                destination=destination,
-                kind="table",
-                headers=headers,
-                rows=normalized_rows,
-            )
-        raise AnalysisAgentError("artifact draft does not match the requested file type")
 
     def create_execution_plan(
         self,

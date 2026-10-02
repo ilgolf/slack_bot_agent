@@ -38,11 +38,11 @@
 
 ### C. 파일 생성 기능 제거 (동작 변경: 파일 생성 요청과 `저장`)
 - 결정: 파일 생성 요청은 더 이상 별도로 처리하지 않는다. 코드 작업 표시어가 있으면 코드 작업, 없으면 분류기·분석으로 간다.
-- [ ] 라우터가 "…를 result.csv로 만들어줘" 같은 요청을 파일 생성으로 분류하지 않고(`RequestIntent.ARTIFACT_GENERATION`과 `생성`·`만들`·`정리` 마커 제거), `저장`을 확인 명령으로 인식하지 않는다
-- [ ] 코디네이터의 파일 생성 처리·`저장` 분기를 지우고, `취소`와 `실행` 소유자 판정을 코드 작업·Linear 두 가지로 줄인다 (`_cancel` 소유자 목록 포함)
-- [ ] "스레드 요약을 파일로 만들어줘"가 요약으로 처리된다 (`_FILE_OUTPUT_MARKERS` 예외 제거)
-- [ ] Slack 초기 상태 문구 "파일 초안 생성 중입니다…" 분기를 지운다
-- [ ] `src/artifact_generation.py`, `LangChainAnalysisAgent.create_artifact_draft`·`ArtifactDraftCreator` 상속, `tests/test_artifact_generation.py`, 다른 테스트의 artifact 참조(`test_block_list_responses`·`test_request_coordinator`·`test_request_router`·`test_handle_app_mention`·`test_autopilot`·`test_thread_summary_workflow`)를 정리한다
+- [x] 라우터가 "…를 result.csv로 만들어줘" 같은 요청을 파일 생성으로 분류하지 않고(`RequestIntent.ARTIFACT_GENERATION`과 `생성`·`만들`·`정리` 마커 제거), `저장`을 확인 명령으로 인식하지 않는다
+- [x] 코디네이터의 파일 생성 처리·`저장` 분기를 지우고, `취소`와 `실행` 소유자 판정을 코드 작업·Linear 두 가지로 줄인다 (`_cancel` 소유자 목록 포함)
+- [x] "스레드 요약을 파일로 만들어줘"가 요약으로 처리된다 (`_FILE_OUTPUT_MARKERS` 예외 제거)
+- [x] Slack 초기 상태 문구 "파일 초안 생성 중입니다…" 분기를 지운다
+- [x] `src/artifact_generation.py`, `LangChainAnalysisAgent.create_artifact_draft`·`ArtifactDraftCreator` 상속, `tests/test_artifact_generation.py`, 다른 테스트의 artifact 참조(`test_block_list_responses`·`test_request_coordinator`·`test_request_router`·`test_handle_app_mention`·`test_autopilot`·`test_thread_summary_workflow`)를 정리한다
 
 ### D. HTTP 진입점 제거 (Socket Mode만)
 - [ ] `build_slack_app`이 `SLACK_SIGNING_SECRET` 없이 Socket Mode 앱을 만들 수 있음을 테스트로 먼저 확인한다 (Slack에 연결하지 않고 `App` 생성만)

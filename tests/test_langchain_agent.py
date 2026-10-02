@@ -226,7 +226,7 @@ def test_langchain_agent_requests_project_before_general_analysis(tmp_path: Path
     assert chat_model.last_input is None
 
 
-def test_langchain_agent_leaves_email_csv_creation_to_the_artifact_workflow(
+def test_langchain_agent_does_not_analyze_file_creation_requests_without_a_project(
     tmp_path: Path,
 ) -> None:
     chat_model = RecordingChatModel('{"summary": "unused", "findings": []}')

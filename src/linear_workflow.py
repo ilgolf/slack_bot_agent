@@ -100,7 +100,7 @@ class PendingLinearActionStore:
 
 
 class LinearIntegrationWorkflow:
-    """Route fixed Linear commands before artifact generation or project analysis."""
+    """Route fixed Linear commands before project analysis."""
 
     def __init__(
         self,
