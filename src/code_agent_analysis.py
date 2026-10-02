@@ -85,7 +85,9 @@ class CodeAgentAnalysisAgent:
         edit_timeout_seconds: float = _DEFAULT_EDIT_TIMEOUT_SECONDS,
         edit_max_turns: int = _DEFAULT_EDIT_MAX_TURNS,
         edit_max_budget_usd: float = _DEFAULT_EDIT_MAX_BUDGET_USD,
+        guidance: str = "",
     ) -> None:
+        self.guidance = guidance
         self.edit_timeout_seconds = edit_timeout_seconds
         self.edit_max_turns = edit_max_turns
         self.edit_max_budget_usd = edit_max_budget_usd
@@ -106,7 +108,9 @@ class CodeAgentAnalysisAgent:
         )
         self.thread_trace_store.put(channel_id, thread_ts, trace)
         if request.project_name is None:
-            prompt = build_general_answer_prompt(request.current_message, request.thread_context)
+            prompt = build_general_answer_prompt(
+                request.current_message, request.thread_context, self.guidance
+            )
             text = self._complete("answer", prompt, "-", channel_id, thread_ts)
             return _summary_from(text)
         project_path = self.project_resolver.resolve(request.project_name)

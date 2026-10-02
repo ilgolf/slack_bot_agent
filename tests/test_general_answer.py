@@ -79,3 +79,27 @@ def test_a_named_project_still_requires_source_evidence(tmp_path: Path) -> None:
     assert result.sources == []
     assert runner.complete_calls == []
     assert len(runner.calls) == 2  # retried once, then insufficient evidence
+
+
+def test_the_agent_puts_its_guidance_in_the_general_answer_prompt(tmp_path: Path) -> None:
+    runner = FakeRunner(complete_output="답")
+    agent = CodeAgentAnalysisAgent(
+        runner=runner,
+        project_resolver=ProjectResolver(root=tmp_path),
+        guidance="이슈 생성은 `실행` 확인 뒤 반영됩니다.",
+    )
+
+    agent.analyze("Linear ticket 만들 수 있어?")
+
+    assert "봇 안내:\n이슈 생성은 `실행` 확인 뒤 반영됩니다." in runner.complete_calls[0]
+
+
+def test_get_agent_gives_code_agents_the_shipped_guidance(tmp_path: Path) -> None:
+    from src.agent import get_agent
+    from src.config import Settings
+
+    settings = Settings(projects_root=str(tmp_path))
+    agent = get_agent("claude_code", settings=settings)
+
+    assert isinstance(agent, CodeAgentAnalysisAgent)
+    assert "Linear 연동" in agent.guidance

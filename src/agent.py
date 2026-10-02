@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from src.config import Settings
+from src.harness import load_guidance
 from src.project_resolver import ProjectResolver
 from src.tools import find_files, list_files, list_projects, read_file
 
@@ -115,6 +116,7 @@ def get_agent(
             edit_timeout_seconds=settings.agent_edit_timeout_seconds,
             edit_max_turns=settings.agent_edit_max_turns,
             edit_max_budget_usd=settings.agent_edit_max_budget_usd,
+            guidance=load_guidance(),
         )
 
     raise ValueError(f"unknown LLM provider: {provider!r}")
