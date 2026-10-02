@@ -1101,26 +1101,6 @@ def test_workflow_asks_for_clarification_on_ambiguous_message_with_pending_plan(
     assert workflow.has_pending("C1", "1.1")
 
 
-def test_pending_code_plan_does_not_intercept_linear_design_question(tmp_path: Path) -> None:
-    project = tmp_path / "my-project"
-    project.mkdir()
-    (project / "README.md").write_text("before\n")
-    workflow = _workflow(tmp_path)
-    context = ThreadContextStore(root=tmp_path / "context")
-    agent = PlanningAgent(_plan())
-    workflow.process(
-        channel_id="C1", thread_ts="1.1", text="my-project README.md 수정해줘",
-        thread_context=context, agent=agent,
-    )
-
-    assert workflow.process(
-        channel_id="C1", thread_ts="1.1", text="Linear GraphQL 기반으로 설계한 거야?",
-        thread_context=context, agent=agent,
-    ) is None
-    assert workflow.has_pending("C1", "1.1")
-    assert agent.calls == 1
-
-
 def test_workflow_does_not_ask_for_clarification_without_a_pending_plan(tmp_path: Path) -> None:
     project = tmp_path / "my-project"
     project.mkdir()

@@ -665,7 +665,6 @@ class ExecutionWorkflow:
         if _DISCARD.fullmatch(command_text):
             return self._discard(channel_id, thread_ts)
         if RequestRouter().route(command_text).intent in {
-            RequestIntent.SYSTEM_INQUIRY,
             RequestIntent.LINEAR_READ,
             RequestIntent.LINEAR_MUTATION,
         }:

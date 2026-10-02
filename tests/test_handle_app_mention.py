@@ -18,13 +18,14 @@ from src.request_router import RequestRouter
 from src.run_state import ThreadRunState, ThreadRunStore
 from src.slack_app import handle_app_mention
 from src.thread_context import ThreadContextStore
+from tests.router_doubles import CodeWorkWords
 
 
 def _coordinator(
     tmp_path: Path, *, linear_workflow: LinearIntegrationWorkflow | None = None
 ) -> RequestCoordinator:
     return RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=linear_workflow
         or LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
@@ -109,7 +110,7 @@ def test_autopilot_progress_updates_the_initial_status_message(tmp_path: Path) -
     project.mkdir()
     (project / "plan.md").write_text("- [ ] first\n- [ ] second\n")
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
@@ -151,7 +152,7 @@ def test_thread_summary_request_shows_a_thread_summary_status(tmp_path: Path) ->
             return "요약"
 
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
         thread_summary_workflow=ThreadSummaryWorkflow(

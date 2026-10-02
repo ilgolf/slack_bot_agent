@@ -121,16 +121,6 @@ class RequestCoordinator:
                 )
                 or "지원되는 Linear 작업을 지정해 주세요."
             )
-        if routed.intent is RequestIntent.SYSTEM_INQUIRY:
-            return dispatch_command(
-                channel_id,
-                thread_ts,
-                text,
-                thread_context=thread_context,
-                agent=agent,
-                record_context=False,
-                linear_api_key_configured=bool(self.linear_workflow.settings.linear_api_key),
-            )
         # Nothing else claimed this message. A thread with an open code-work
         # conversation — a pending plan, or a request stalled only for a
         # project name — gets one more chance to recognize this message

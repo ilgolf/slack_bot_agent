@@ -22,6 +22,7 @@ from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
 from src.request_router import RequestRouter
 from src.thread_context import ThreadContextStore
+from tests.router_doubles import CodeWorkWords
 
 
 class PlanningAgent:
@@ -340,7 +341,7 @@ def test_coordinator_forwards_progress_to_code_work_workflow(tmp_path: Path) -> 
         [_write_plan("src/a.txt", "A\n"), _write_plan("src/b.txt", "B\n")]
     )
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )

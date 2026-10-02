@@ -13,6 +13,7 @@ from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
 from src.request_router import RequestRouter
 from src.thread_context import ThreadContextStore
+from tests.router_doubles import CodeWorkWords
 
 
 class TraceAgent:
@@ -38,6 +39,16 @@ class PlanningAgent:
             verification_commands=[],
             risk=ExecutionRisk.MODIFY,
         )
+
+
+class AnsweringPlanningAgent(PlanningAgent):
+    """A planning agent that also answers questions with a fixed analysis."""
+
+    def analyze(
+        self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
+    ) -> AnalysisResult:
+        del channel_id, thread_ts
+        return AnalysisResult(summary=f"분석 답변: {question}", findings=[])
 
 
 class InvestigatingPlanningAgent(PlanningAgent):
@@ -87,7 +98,7 @@ def test_fresh_thread_plan_follow_up_phrase_reaches_code_work_without_prior_cont
     source.parent.mkdir(parents=True)
     source.write_text("def feature():\n    return 1\n")
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
@@ -111,7 +122,7 @@ def test_execute_confirmation_consumes_pending_code_plan(tmp_path: Path) -> None
     readme = project / "README.md"
     readme.write_text("before\n")
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
@@ -144,20 +155,20 @@ def test_design_question_preserves_pending_code_plan(tmp_path: Path) -> None:
     readme = project / "README.md"
     readme.write_text("before\n")
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     context = ThreadContextStore(root=tmp_path / "context")
-    agent = PlanningAgent()
+    agent = AnsweringPlanningAgent()
 
     coordinator.process(
         channel_id="C1", thread_ts="1.1", text="my-project README.md 수정해줘",
-        thread_context=context, agent=agent,  # type: ignore[arg-type]
+        thread_context=context, agent=agent,
     )
     _, answer = coordinator.process(
         channel_id="C1", thread_ts="1.1", text="GraphQL 기반으로 설계한 거야?",
-        thread_context=context, agent=agent,  # type: ignore[arg-type]
+        thread_context=context, agent=agent,
     )
 
     assert "GraphQL" in answer
@@ -167,7 +178,7 @@ def test_design_question_preserves_pending_code_plan(tmp_path: Path) -> None:
 
     _, execution = coordinator.process(
         channel_id="C1", thread_ts="1.1", text="실행",
-        thread_context=context, agent=agent,  # type: ignore[arg-type]
+        thread_context=context, agent=agent,
     )
     assert "구현 완료 (자동 검증 없음)" in execution
     assert readme.read_text() == "after\n"
@@ -182,7 +193,7 @@ def test_ambiguous_follow_up_gets_clarification_instead_of_general_analysis(
     project = tmp_path / "my-project"
     project.mkdir()
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
@@ -217,7 +228,7 @@ def test_bare_project_name_reply_resumes_a_stalled_code_work_request(tmp_path: P
     project = tmp_path / "my-project"
     project.mkdir()
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
@@ -255,7 +266,7 @@ def test_completed_code_work_lets_natural_continuation_phrase_start_new_plan(
     readme = project / "README.md"
     readme.write_text("before\n")
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
@@ -309,7 +320,7 @@ def test_ambiguous_project_after_multiple_completed_plans_asks_for_choice(
         project.mkdir()
         (project / "README.md").write_text("before\n")
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
@@ -347,7 +358,7 @@ def test_trace_summary_uses_current_thread_key_from_thread_trace_store(tmp_path:
     """'trace 요약' must look up the *requesting* thread's own trace, not a
     single agent-wide slot shared by every thread."""
     coordinator = RequestCoordinator(
-        router=RequestRouter(),
+        router=RequestRouter(intent_classifier=CodeWorkWords()),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )

@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 
 from src.agent import AnalysisAgent, AnalysisAgentError, AnalysisResult
-from src.system_inquiry import answer_system_inquiry
 from src.thread_context import ThreadContextStore
 
 logger = logging.getLogger(__name__)
@@ -24,20 +23,9 @@ def dispatch_command(
     thread_context: ThreadContextStore,
     agent: AnalysisAgent,
     record_context: bool = True,
-    linear_api_key_configured: bool | None = None,
 ) -> str:
     if not text.strip():
         return ""
-
-    system_response = answer_system_inquiry(
-        text, linear_api_key_configured=linear_api_key_configured
-    )
-    if system_response is not None:
-        if record_context:
-            thread_context.append(channel_id, thread_ts, text)
-            thread_context.append(channel_id, thread_ts, system_response)
-        logger.info("system_inquiry_completed kind=external_integration")
-        return system_response
 
     prior_context = thread_context.read(channel_id, thread_ts)
     if record_context:
