@@ -8,8 +8,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_core.tools import StructuredTool
-
 from src.tool_policy import ConfirmationMode, ToolCategory, requires_confirmation
 
 
@@ -51,21 +49,6 @@ class ToolRegistry:
 
     def definitions(self) -> list[ToolDefinition]:
         return list(self._definitions.values())
-
-    def as_langchain_tools(self) -> list[StructuredTool]:
-        """Build the LLM-facing tool list straight from each definition's
-        handler and derived schema — no second, hand-written schema to drift
-        from the one `invoke()` enforces. A denied tool is never bound, so the
-        model cannot even propose calling it."""
-        return [
-            StructuredTool.from_function(
-                func=definition.handler,
-                name=definition.name,
-                description=definition.handler.__doc__ or definition.name,
-            )
-            for definition in self._definitions.values()
-            if definition.confirmation is not ConfirmationMode.DENY
-        ]
 
     def invoke(
         self, name: str, args: dict[str, Any] | None = None, *, confirmed: bool = False
