@@ -88,7 +88,6 @@ _EXECUTION_MARKERS = (
 _ALLOWED_VERIFICATIONS = ("run_tests", "run_lint", "run_typecheck")
 DEFAULT_MAX_AUTO_REPAIRS = 2
 DEFAULT_MAX_AUTOPILOT_ITEMS = 20
-_GREP_IGNORED_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__"})
 
 
 class ExecutionRisk(StrEnum):
@@ -462,49 +461,6 @@ class ProjectExecutionTools:
 
     def read_file(self, relative_path: str) -> str:
         return _project_path(self.root, relative_path).read_text(encoding="utf-8")
-
-    def list_files(self, relative_path: str = ".") -> list[str]:
-        path = _project_path(self.root, relative_path, allow_root=True)
-        return sorted(item.name for item in path.iterdir())
-
-    def grep(self, query: str, relative_path: str = ".") -> list[str]:
-        if not query or len(query) > 200:
-            raise ValueError("검색어가 올바르지 않습니다")
-        directory = _project_path(self.root, relative_path, allow_root=True)
-        if not directory.is_dir():
-            raise ValueError("검색 경로가 디렉터리가 아닙니다")
-        matches: list[str] = []
-        for path in directory.rglob("*"):
-            if len(matches) >= 100:
-                break
-            if path.is_symlink() or not path.is_file():
-                continue
-            relative_parts = path.relative_to(self.root).parts
-            if _GREP_IGNORED_DIRS.intersection(relative_parts):
-                continue
-            try:
-                if query in path.read_text(encoding="utf-8"):
-                    matches.append(str(path.relative_to(self.root)))
-            except (OSError, UnicodeDecodeError):
-                continue
-        return matches
-
-    def git_status(self) -> list[str]:
-        return _read_git_state(self.root).changed_files
-
-    def git_diff(self, relative_path: str | None = None) -> str:
-        command = ["git", "-C", str(self.root), "diff", "--"]
-        if relative_path is not None:
-            _project_path(self.root, relative_path)
-            command.append(relative_path)
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        return (completed.stdout + completed.stderr)[-32_000:]
 
     def write_file(self, relative_path: str, content: str) -> tuple[str, str]:
         if relative_path not in self.allowed_paths:

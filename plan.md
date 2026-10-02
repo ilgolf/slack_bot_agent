@@ -51,10 +51,10 @@
 - [x] 소스에서 `slack_bolt.adapter.fastapi`·`FastAPI` 참조가 남지 않았음을 확인한다
 
 ### E. 문서·마무리
-- [ ] `.env.example`과 README에서 삭제된 기능(HTTP 진입점, 파일 생성, 역할별 provider) 설명을 지우거나 고친다 (README 아키텍처 그림의 `Artifact` 표기 포함 여부를 확인한다)
-- [ ] `plan.archive.md`의 "LLM Provider 역할 분리" 블록에 "Phase 19에서 취소(코드 제거)"라고 표시한다
-- [ ] 정적 스캔(진입점 도달성, 정의 외 참조가 없는 이름)을 다시 돌려 남은 미참조 이름이 없음을 확인하고 결과를 기록한다
-- [ ] 전체 `pytest`·`ruff`·`mypy`가 통과하고, `claude_code` 편집 모드와 Slack 요약이 실제 봇에서 그대로 동작함을 확인한다
+- [x] `.env.example`과 README에서 삭제된 기능(HTTP 진입점, 파일 생성, 역할별 provider) 설명을 지우거나 고친다 (README 아키텍처 그림의 `Artifact` 표기 포함 여부를 확인한다) — `.env.example`은 D에서 고쳤다. README는 개념 설계 문서라 `main.py`·`Artifact` 표기는 구현이 아닌 설계 개념이어서 그대로 둔다.
+- [x] `plan.archive.md`의 "LLM Provider 역할 분리" 블록에 "Phase 19에서 취소(코드 제거)"라고 표시한다
+- [x] 정적 스캔(진입점 도달성, 정의 외 참조가 없는 이름)을 다시 돌려 남은 미참조 이름이 없음을 확인하고 결과를 기록한다 — 결과: 최상위 이름은 모두 참조됨. 새로 드러난 `ProjectExecutionTools.list_files`·`grep`·`git_status`·`git_diff`(삭제된 `tool_registry()`만 쓰던 것)와 `_GREP_IGNORED_DIRS`를 함께 지웠다.
+- [ ] 전체 `pytest`·`ruff`·`mypy`가 통과하고, `claude_code` 편집 모드와 Slack 요약이 실제 봇에서 그대로 동작함을 확인한다 — 자동 검사는 통과(`pytest` 773건, `ruff check`, `mypy src`). 실제 봇 확인은 수동 확인 항목으로 남아 있다.
 
 ## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
 
