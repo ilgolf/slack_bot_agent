@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from src.config import Settings
 from src.project_resolver import ProjectResolver
@@ -62,6 +62,28 @@ class FakeAnalysisAgent:
         )
 
 
+def build_chat_model(provider: str, *, settings: Settings) -> Any:
+    """The LangChain chat model for an API-key provider (`anthropic` or `openai`)."""
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
+        # langchain-anthropic's pydantic model accepts `model`/`api_key` as aliases
+        # and coerces a plain `str` into `SecretStr` at runtime; its generated stub
+        # doesn't reflect either, hence the ignores.
+        return ChatAnthropic(
+            api_key=settings.anthropic_api_key,  # type: ignore[arg-type]
+            model=settings.llm_model or "claude-3-5-sonnet-latest",  # type: ignore[call-arg]
+        )
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            api_key=settings.openai_api_key,  # type: ignore[arg-type]
+            model=settings.llm_model or "gpt-4o-mini",
+        )
+    raise ValueError(f"unknown LLM provider: {provider!r}")
+
+
 def get_agent(
     provider: str, *, settings: Settings
 ) -> AnalysisAgent | LangChainAnalysisAgent | CodeAgentAnalysisAgent:
@@ -70,36 +92,11 @@ def get_agent(
 
     project_resolver = ProjectResolver(root=Path(settings.projects_root).expanduser())
 
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-
+    if provider in {"anthropic", "openai"}:
         from src.langchain_agent import LangChainAnalysisAgent
 
-        # langchain-anthropic's pydantic model accepts `model`/`api_key` as aliases
-        # and coerces a plain `str` into `SecretStr` at runtime; its generated stub
-        # doesn't reflect either, hence the ignores.
-        anthropic_chat_model = ChatAnthropic(
-            api_key=settings.anthropic_api_key,  # type: ignore[arg-type]
-            model=settings.llm_model or "claude-3-5-sonnet-latest",  # type: ignore[call-arg]
-        )
         return LangChainAnalysisAgent(
-            chat_model=anthropic_chat_model,
-            project_resolver=project_resolver,
-            tools=[list_projects, read_file, list_files, find_files],
-            max_tool_iterations=settings.agent_max_tool_iterations,
-        )
-
-    if provider == "openai":
-        from langchain_openai import ChatOpenAI
-
-        from src.langchain_agent import LangChainAnalysisAgent
-
-        openai_chat_model = ChatOpenAI(
-            api_key=settings.openai_api_key,  # type: ignore[arg-type]
-            model=settings.llm_model or "gpt-4o-mini",
-        )
-        return LangChainAnalysisAgent(
-            chat_model=openai_chat_model,
+            chat_model=build_chat_model(provider, settings=settings),
             project_resolver=project_resolver,
             tools=[list_projects, read_file, list_files, find_files],
             max_tool_iterations=settings.agent_max_tool_iterations,
