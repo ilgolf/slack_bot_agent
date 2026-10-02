@@ -13,6 +13,7 @@ from src.linear_workflow import LinearIntegrationWorkflow
 from src.request_router import RequestIntent, RequestRouter, RoutedRequest
 from src.run_state import CodeWorkState
 from src.thread_context import ThreadContextStore, ThreadWorkContext
+from src.thread_summary_workflow import ThreadSummaryWorkflow
 
 
 @dataclass
@@ -21,6 +22,7 @@ class RequestCoordinator:
     execution_workflow: ExecutionWorkflow
     artifact_workflow: ArtifactGenerationWorkflow
     linear_workflow: LinearIntegrationWorkflow
+    thread_summary_workflow: ThreadSummaryWorkflow | None = None
 
     def process(
         self,
@@ -93,6 +95,10 @@ class RequestCoordinator:
                 thread_context=thread_context,
                 agent=agent,
             )
+        if routed.intent is RequestIntent.THREAD_SUMMARY:
+            if self.thread_summary_workflow is None:
+                return "스레드 요약 기능이 설정되지 않았습니다."
+            return self.thread_summary_workflow.process(channel_id=channel_id, thread_ts=thread_ts)
         if routed.intent is RequestIntent.CODE_WORK:
             return (
                 self.execution_workflow.process(

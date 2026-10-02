@@ -26,7 +26,10 @@ from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
 from src.request_router import RequestIntent, RequestRouter
 from src.run_state import ThreadRunStore
+from src.slack_thread import SlackThreadReader
 from src.thread_context import ThreadContextStore
+from src.thread_summarizer import ThreadSummarizer
+from src.thread_summary_workflow import ThreadSummaryWorkflow
 
 
 class SlackConfigError(RuntimeError):
@@ -67,6 +70,8 @@ def handle_app_mention(
             initial_status = "Linear 작업 중입니다…"
         elif intent is RequestIntent.ARTIFACT_GENERATION:
             initial_status = "파일 초안 생성 중입니다…"
+        elif intent is RequestIntent.THREAD_SUMMARY:
+            initial_status = "스레드 요약 중입니다…"
     status_message = say(text=initial_status, thread_ts=thread_ts)
     on_progress = _progress_updater(client, channel_id, status_message)
     if run_store is not None:
@@ -161,6 +166,7 @@ def start_socket_mode(
     *,
     thread_context: ThreadContextStore,
     agent: AnalysisAgent,
+    thread_summarizer: ThreadSummarizer | None = None,
 ) -> None:
     """Run the Slack app through Socket Mode until the process is stopped."""
     if not settings.slack_app_token:
@@ -174,11 +180,19 @@ def start_socket_mode(
         project_resolver=ProjectResolver(root=Path(settings.projects_root).expanduser()),
         skill_registry=SkillRegistry({"codex": "~/.codex/skills"}),
     )
+    thread_summary_workflow = (
+        ThreadSummaryWorkflow(
+            reader=SlackThreadReader(slack_app.client), summarizer=thread_summarizer
+        )
+        if thread_summarizer is not None
+        else None
+    )
     coordinator = RequestCoordinator(
         router=RequestRouter(intent_classifier=build_intent_classifier(agent)),
         execution_workflow=execution_workflow,
         artifact_workflow=artifact_workflow,
         linear_workflow=linear_workflow,
+        thread_summary_workflow=thread_summary_workflow,
     )
 
     @slack_app.event("app_mention")

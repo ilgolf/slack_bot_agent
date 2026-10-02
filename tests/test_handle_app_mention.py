@@ -125,3 +125,43 @@ def test_autopilot_progress_updates_the_initial_status_message(tmp_path: Path) -
         {"channel": "C1", "ts": "2.2", "text": "🔄 자동 진행 1/2 완료"},
         {"channel": "C1", "ts": "2.2", "text": "🔄 자동 진행 2/2 완료"},
     ]
+
+
+def test_thread_summary_request_shows_a_thread_summary_status(tmp_path: Path) -> None:
+    from src.artifact_generation import ArtifactGenerationWorkflow
+    from src.execution_workflow import ExecutionWorkflow
+    from src.project_resolver import ProjectResolver
+    from src.request_coordinator import RequestCoordinator
+    from src.request_router import RequestRouter
+    from src.slack_thread import ThreadMessage
+    from src.thread_summary_workflow import ThreadSummaryWorkflow
+
+    class OneMessageReader:
+        def read(self, channel_id: str, thread_ts: str) -> list[ThreadMessage]:
+            return [ThreadMessage(user="U1", ts="1790905490.0", text="안녕")]
+
+    class FixedSummarizer:
+        def summarize(self, transcript: str) -> str:
+            return "요약"
+
+    coordinator = RequestCoordinator(
+        router=RequestRouter(),
+        execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
+        artifact_workflow=ArtifactGenerationWorkflow(),
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+        thread_summary_workflow=ThreadSummaryWorkflow(
+            reader=OneMessageReader(), summarizer=FixedSummarizer()
+        ),
+    )
+    say = RecordingSay()
+
+    handle_app_mention(
+        {"channel": "C1", "ts": "2.0", "thread_ts": "1.0", "text": "<@U9> 이 스레드 요약해줘"},
+        say,
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=FakeAnalysisAgent(),
+        coordinator=coordinator,
+    )
+
+    assert say.calls[0] == {"text": "스레드 요약 중입니다…", "thread_ts": "1.0"}
+    assert "1개 메시지를 요약했습니다" in say.calls[1]["text"]
