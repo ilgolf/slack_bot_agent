@@ -63,7 +63,7 @@ def test_plan_follow_accepts_new_file_under_module_src(tmp_path: Path) -> None:
 
 
 def test_plan_prompt_follows_existing_module_layout_instead_of_fixed_src() -> None:
-    from src.langchain_agent import _CODE_PLAN_POLICY
+    from src.code_plan_prompts import _CODE_PLAN_POLICY
 
     assert "src/ 아래" not in _CODE_PLAN_POLICY
     assert "모듈" in _CODE_PLAN_POLICY
