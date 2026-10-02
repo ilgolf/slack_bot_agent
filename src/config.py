@@ -6,19 +6,10 @@ optional local ``.env`` file (see ``.env.example``).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-@dataclass(frozen=True)
-class LLMRoleProviders:
-    """Explicit provider selections for the two LLM workflow roles."""
-
-    analysis_plan: str | None
-    code_execution: str | None
 
 
 class Settings(BaseSettings):
@@ -45,12 +36,7 @@ class Settings(BaseSettings):
     slack_signing_secret: str | None = None
     slack_app_token: str | None = None
 
-    # Legacy provider shared by both roles when role-specific selection is absent.
     llm_provider: str = "fake"
-    # Optional role-specific provider selections. Resolution and fallback are handled
-    # separately so configuration loading preserves whether a role was explicit.
-    analysis_plan_llm_provider: str | None = None
-    code_execution_llm_provider: str | None = None
     # Overrides the provider's default chat model (see src.agent.get_agent)
     llm_model: str | None = None
     anthropic_api_key: str | None = None
@@ -73,14 +59,6 @@ class Settings(BaseSettings):
     linear_api_key: str | None = None
     linear_api_url: str = "https://api.linear.app/graphql"
     linear_timeout_seconds: float = 10.0
-
-    @property
-    def llm_role_providers(self) -> LLMRoleProviders:
-        """Return explicit provider settings grouped by workflow role."""
-        return LLMRoleProviders(
-            analysis_plan=self.analysis_plan_llm_provider,
-            code_execution=self.code_execution_llm_provider,
-        )
 
 
 _settings: Settings | None = None
