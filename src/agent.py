@@ -15,6 +15,7 @@ from src.project_resolver import ProjectResolver
 from src.tools import find_files, list_files, list_projects, read_file
 
 if TYPE_CHECKING:
+    from src.code_agent_analysis import CodeAgentAnalysisAgent
     from src.langchain_agent import LangChainAnalysisAgent
 
 
@@ -61,7 +62,9 @@ class FakeAnalysisAgent:
         )
 
 
-def get_agent(provider: str, *, settings: Settings) -> AnalysisAgent | LangChainAnalysisAgent:
+def get_agent(
+    provider: str, *, settings: Settings
+) -> AnalysisAgent | LangChainAnalysisAgent | CodeAgentAnalysisAgent:
     if provider == "fake":
         return FakeAnalysisAgent()
 
@@ -100,6 +103,18 @@ def get_agent(provider: str, *, settings: Settings) -> AnalysisAgent | LangChain
             project_resolver=project_resolver,
             tools=[list_projects, read_file, list_files, find_files],
             max_tool_iterations=settings.agent_max_tool_iterations,
+        )
+
+    if provider in {"claude_code", "codex"}:
+        from src.agent_runners import create_claude_runner, create_codex_runner
+        from src.code_agent_analysis import CodeAgentAnalysisAgent
+
+        runner = create_claude_runner() if provider == "claude_code" else create_codex_runner()
+        return CodeAgentAnalysisAgent(
+            runner=runner,
+            project_resolver=project_resolver,
+            timeout_seconds=settings.agent_runner_timeout_seconds,
+            max_turns=settings.agent_runner_max_turns,
         )
 
     raise ValueError(f"unknown LLM provider: {provider!r}")

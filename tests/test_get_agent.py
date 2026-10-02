@@ -5,8 +5,15 @@ seam.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from src.agent import FakeAnalysisAgent, get_agent
 from src.agent_trace import ThreadTraceStore
+from src.claude_sdk_runner import ClaudeSdkRunner
+from src.code_agent_analysis import CodeAgentAnalysisAgent
+from src.codex_sdk_runner import CodexSdkRunner
 from src.config import Settings
 from src.langchain_agent import LangChainAnalysisAgent
 from src.tools import find_files, list_files, list_projects, read_file
@@ -89,3 +96,39 @@ def test_default_models_are_kept_without_llm_model_setting() -> None:
 
     assert openai_agent.chat_model.model_name == "gpt-4o-mini"  # type: ignore[attr-defined]
     assert anthropic_agent.chat_model.model == "claude-3-5-sonnet-latest"  # type: ignore[attr-defined]
+
+
+def test_get_agent_returns_a_claude_sdk_code_agent_for_claude_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)  # no `.env` here
+    settings = Settings(agent_runner_timeout_seconds=42.0, agent_runner_max_turns=7)
+
+    agent = get_agent("claude_code", settings=settings)
+
+    assert isinstance(agent, CodeAgentAnalysisAgent)
+    assert isinstance(agent.runner, ClaudeSdkRunner)
+    assert (agent.timeout_seconds, agent.max_turns) == (42.0, 7)
+
+
+def test_get_agent_returns_a_codex_sdk_code_agent_for_codex(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/codex")
+    monkeypatch.chdir(tmp_path)  # no `.env` here
+    settings = Settings(agent_runner_timeout_seconds=42.0, agent_runner_max_turns=7)
+
+    agent = get_agent("codex", settings=settings)
+
+    assert isinstance(agent, CodeAgentAnalysisAgent)
+    assert isinstance(agent.runner, CodexSdkRunner)
+    assert (agent.timeout_seconds, agent.max_turns) == (42.0, 7)
+
+
+def test_get_agent_rejects_an_unknown_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)  # no `.env` here
+
+    with pytest.raises(ValueError, match="unknown LLM provider"):
+        get_agent("nope", settings=Settings())

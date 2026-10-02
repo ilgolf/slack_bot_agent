@@ -61,3 +61,16 @@ def test_linear_settings_read_from_environment(
 
     assert settings.linear_api_key == "lin_api_test"
     assert settings.linear_timeout_seconds == 12.5
+
+
+def test_agent_runner_limits_default_to_the_code_agent_adapter_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("AGENT_RUNNER_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("AGENT_RUNNER_MAX_TURNS", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    settings = Settings()
+
+    assert settings.agent_runner_timeout_seconds == 300.0
+    assert settings.agent_runner_max_turns == 20

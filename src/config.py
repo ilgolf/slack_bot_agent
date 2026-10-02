@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     agent_max_tool_iterations: int = 16
 
+    # Limits for code-agent runners (`claude_code`, `codex`; see src.code_agent_analysis)
+    agent_runner_timeout_seconds: float = 300.0
+    agent_runner_max_turns: int = 20
+
     # Linear — a Personal API key for this local PC installation only.
     linear_api_key: str | None = None
     linear_api_url: str = "https://api.linear.app/graphql"
