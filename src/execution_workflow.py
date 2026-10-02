@@ -35,6 +35,15 @@ from src.code_work_markers import (
     is_plan_follow_work_request,
 )
 from src.message_text import content_text
+from src.plan_guard import (
+    PLAN_MAX_TOTAL_BYTES,
+    REPAIR_MAX_TOTAL_BYTES,
+    is_risky_path,
+    is_secret_path,
+    reject_blanking,
+    reject_mass_deletion,
+    reject_oversized_total,
+)
 from src.project_resolver import (
     AmbiguousProject,
     InvalidProjectName,
@@ -623,6 +632,36 @@ def _read_existing_files(root: Path, target_paths: list[str]) -> list[ExistingFi
     return files
 
 
+def _is_guarded_path(path: str) -> bool:
+    return _is_protected_meta_path(path) or is_risky_path(path) or is_secret_path(path)
+
+
+def _unseen_existing_files(
+    root: Path, affected_files: list[str], existing_files: list[ExistingFile]
+) -> list[str]:
+    """Affected paths that exist on disk but whose content the planner never saw.
+    Protected, code-executing and secret paths are left to plan validation, which
+    rejects them outright instead of replanning around them."""
+    seen: set[Path] = set()
+    for item in existing_files:
+        if item.content is not None:
+            try:
+                seen.add(_project_path(root, item.relative_path))
+            except ValueError:
+                continue
+    unseen: list[str] = []
+    for path in affected_files:
+        try:
+            target = _project_path(root, path)
+        except ValueError:
+            continue
+        if _is_guarded_path(path):
+            continue
+        if target.exists() and target not in seen:
+            unseen.append(path)
+    return unseen
+
+
 class ExecutionWorkflow:
     """Creates a preview, then applies only its confirmed bounded plan."""
 
@@ -827,18 +866,23 @@ class ExecutionWorkflow:
             plan = _create_plan_with_format_retry(
                 creator, contextual_text, context, skills, existing_files
             )
-            if not target_paths and plan.affected_files:
-                # No file was named, so the model proposed one itself while
-                # planning. Re-read whatever it picked and ask again so an
-                # already-existing file still isn't written to blind.
-                reread = _read_existing_files(context.root, plan.affected_files)
-                if any(item.content is not None for item in reread):
-                    existing_files = reread
-                    context = self.context_loader.load(
-                        project_name, target_paths=plan.affected_files
-                    )
-                    plan = _create_plan_with_format_retry(
-                        creator, contextual_text, context, skills, existing_files
+            unseen = _unseen_existing_files(context.root, plan.affected_files, existing_files)
+            if unseen:
+                # The model picked existing files the planner was never shown.
+                # Show them and ask once more so nothing is rewritten blind.
+                target_paths = list(dict.fromkeys([*target_paths, *unseen]))
+                existing_files = _read_existing_files(context.root, target_paths)
+                context = self.context_loader.load(project_name, target_paths=target_paths)
+                plan = _create_plan_with_format_retry(
+                    creator, contextual_text, context, skills, existing_files
+                )
+                still_unseen = _unseen_existing_files(
+                    context.root, plan.affected_files, existing_files
+                )
+                if still_unseen:
+                    listed = ", ".join(f"`{path}`" for path in still_unseen)
+                    raise ValueError(
+                        f"계획이 내용을 보지 못한 기존 파일을 수정하려 합니다: {listed}"
                     )
             # A model that includes a protected file alongside real changes
             # (e.g. wanting to note progress in plan.md) shouldn't kill an
@@ -1517,6 +1561,14 @@ def _validate_plan(
                 f"`{path}`는 프로젝트 관리 파일이라 사용자가 직접 지정한 경우에만 "
                 "수정할 수 있습니다"
             )
+    for path in plan.affected_files:
+        if is_secret_path(path):
+            raise ValueError(f"`{path}`는 비밀값 파일이라 수정할 수 없습니다")
+        if is_risky_path(path) and path not in named:
+            raise ValueError(
+                f"`{path}`는 검증이나 CI에서 코드로 실행될 수 있어 사용자가 직접 지정한 "
+                "경우에만 수정할 수 있습니다"
+            )
     if plan.risk is ExecutionRisk.HIGH:
         raise ValueError("고위험 작업(의존성·네트워크·삭제·Git push)은 지원하지 않습니다")
     if len(plan.steps) > 20 or len(plan.affected_files) > 20:
@@ -1546,6 +1598,11 @@ def _validate_plan(
         )
     if any(step.action != "write_file" for step in plan.steps):
         raise ValueError("허용되지 않은 실행 단계가 포함되었습니다")
+    if project_root is not None:
+        writes = [(step.path, step.content) for step in plan.steps]
+        reject_oversized_total(writes, PLAN_MAX_TOTAL_BYTES)
+        reject_blanking(project_root, writes)
+        reject_mass_deletion(project_root, writes, named)
     if any(command not in _ALLOWED_VERIFICATIONS for command in plan.verification_commands):
         raise ValueError("허용되지 않은 검증 명령이 포함되었습니다")
     if len(set(plan.verification_commands)) != len(plan.verification_commands):
@@ -1568,6 +1625,9 @@ def _validate_repair_steps(steps: object, approved_paths: Sequence[str]) -> None
             raise ValueError("자동 복구에 승인 파일 범위 밖 수정이 필요합니다")
         if _is_protected_meta_path(step.path):
             raise ValueError("보호 파일은 자동 복구할 수 없어 새 계획과 확인이 필요합니다")
+        if is_risky_path(step.path) or is_secret_path(step.path):
+            raise ValueError("코드로 실행되거나 비밀값을 담은 파일은 자동 복구할 수 없습니다")
+    reject_oversized_total([(step.path, step.content) for step in steps], REPAIR_MAX_TOTAL_BYTES)
 
 
 def _fingerprint(request: str) -> str:

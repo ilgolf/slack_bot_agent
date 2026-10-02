@@ -2457,3 +2457,446 @@ def test_plan_authoring_wording_only_in_thread_context_does_not_unlock_plan_md(
     assert result is not None
     assert not workflow.has_pending("C1", "1.1")
     assert (project / "plan.md").read_text() == "# 기존 계획\n"
+
+
+@pytest.mark.parametrize("action", ["delete", "rename", "move"])
+def test_plan_with_a_non_write_step_is_rejected_and_nothing_changes(
+    tmp_path: Path, action: str
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    agent = PlanningAgent(
+        ExecutionPlan(
+            goal="정리",
+            project_name="my-project",
+            affected_files=["README.md"],
+            steps=[ExecutionStep(action=action, path="README.md", content="")],  # type: ignore[arg-type]
+            verification_commands=[],
+            risk=ExecutionRisk.MODIFY,
+        )
+    )
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "허용되지 않은 실행 단계" in result
+    assert not workflow.has_pending("C1", "1.1")
+    assert (project / "README.md").read_text() == "before\n"
+
+
+def test_plan_that_blanks_an_existing_file_is_rejected_and_nothing_changes(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    agent = PlanningAgent(_plan(content=""))
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project README.md 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+    assert result is not None
+    assert "비우" in result
+    assert not workflow.has_pending("C1", "1.1")
+    assert (project / "README.md").read_text() == "before\n"
+
+
+def _mass_deletion_run(tmp_path: Path, text: str) -> tuple[str | None, ExecutionWorkflow, Path]:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("".join(f"line {n}\n" for n in range(30)))
+    workflow = _workflow(tmp_path)
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text=text,
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=PlanningAgent(_plan(content="line 0\nline 1\nnew\n")),
+    )
+    return result, workflow, project
+
+
+def test_unnamed_file_losing_most_of_its_lines_is_rejected_and_nothing_changes(
+    tmp_path: Path,
+) -> None:
+    result, workflow, project = _mass_deletion_run(tmp_path, "my-project 수정해줘")
+
+    assert result is not None
+    assert "대부분" in result
+    assert not workflow.has_pending("C1", "1.1")
+    assert (project / "README.md").read_text().startswith("line 0\nline 1\nline 2\n")
+
+
+def test_user_named_file_may_lose_most_of_its_lines(tmp_path: Path) -> None:
+    result, workflow, _ = _mass_deletion_run(tmp_path, "my-project README.md 수정해줘")
+
+    assert result is not None
+    assert workflow.has_pending("C1", "1.1")
+
+
+def test_blank_new_file_is_allowed(tmp_path: Path) -> None:
+    (tmp_path / "my-project").mkdir()
+    workflow = _workflow(tmp_path)
+
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project docs/empty.md 추가해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=PlanningAgent(
+            ExecutionPlan(
+                goal="빈 문서",
+                project_name="my-project",
+                affected_files=["docs/empty.md"],
+                steps=[ExecutionStep(action="write_file", path="docs/empty.md", content="")],
+                verification_commands=[],
+                risk=ExecutionRisk.MODIFY,
+            )
+        ),
+    )
+
+    assert workflow.has_pending("C1", "1.1")
+
+
+def test_unnamed_file_losing_a_few_lines_is_allowed(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    lines = [f"line {n}\n" for n in range(30)]
+    (project / "README.md").write_text("".join(lines))
+    workflow = _workflow(tmp_path)
+
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=PlanningAgent(_plan(content="".join(lines[5:]))),
+    )
+
+    assert workflow.has_pending("C1", "1.1")
+
+
+@pytest.mark.parametrize(
+    "risky_path",
+    ["tests/conftest.py", "pyproject.toml", ".github/workflows/ci.yml", "scripts/run.sh"],
+)
+def test_unnamed_code_executing_file_is_rejected_and_nothing_is_written(
+    tmp_path: Path, risky_path: str
+) -> None:
+    (tmp_path / "my-project").mkdir()
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=PlanningAgent(
+            ExecutionPlan(
+                goal="설정",
+                project_name="my-project",
+                affected_files=[risky_path],
+                steps=[ExecutionStep(action="write_file", path=risky_path, content="x = 1\n")],
+                verification_commands=[],
+                risk=ExecutionRisk.MODIFY,
+            )
+        ),
+    )
+
+    assert result is not None
+    assert risky_path in result
+    assert not workflow.has_pending("C1", "1.1")
+    assert not (tmp_path / "my-project" / risky_path).exists()
+
+
+@pytest.mark.parametrize("risky_path", ["tests/conftest.py", "pyproject.toml", "scripts/run.sh"])
+def test_user_named_code_executing_file_is_allowed(tmp_path: Path, risky_path: str) -> None:
+    (tmp_path / "my-project").mkdir()
+    workflow = _workflow(tmp_path)
+
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text=f"my-project {risky_path} 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=PlanningAgent(
+            ExecutionPlan(
+                goal="설정",
+                project_name="my-project",
+                affected_files=[risky_path],
+                steps=[ExecutionStep(action="write_file", path=risky_path, content="x = 1\n")],
+                verification_commands=[],
+                risk=ExecutionRisk.MODIFY,
+            )
+        ),
+    )
+
+    assert workflow.has_pending("C1", "1.1")
+
+
+@pytest.mark.parametrize("secret_path", [".env", ".env.local", "config/.env.production"])
+def test_env_files_are_rejected_even_when_the_user_names_them(
+    tmp_path: Path, secret_path: str
+) -> None:
+    (tmp_path / "my-project").mkdir()
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text=f"my-project {secret_path} 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=PlanningAgent(
+            ExecutionPlan(
+                goal="설정",
+                project_name="my-project",
+                affected_files=[secret_path],
+                steps=[ExecutionStep(action="write_file", path=secret_path, content="K=1\n")],
+                verification_commands=[],
+                risk=ExecutionRisk.MODIFY,
+            )
+        ),
+    )
+
+    assert result is not None
+    assert "비밀값" in result
+    assert not workflow.has_pending("C1", "1.1")
+    assert not (tmp_path / "my-project" / secret_path).exists()
+
+
+def test_auto_repair_never_edits_a_code_executing_file_even_when_it_was_approved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("before\n")
+    monkeypatch.setattr(
+        ProjectExecutionTools,
+        "run_check",
+        lambda _tools, name: CommandResult(name, False, "test failed"),
+    )
+    plan = ExecutionPlan(
+        goal="설정",
+        project_name="my-project",
+        affected_files=["pyproject.toml"],
+        steps=[ExecutionStep(action="write_file", path="pyproject.toml", content="applied\n")],
+        verification_commands=["run_tests"],
+        risk=ExecutionRisk.MODIFY,
+    )
+
+    class RepairingConfigAgent(PlanningAgent):
+        def create_repair_steps(
+            self,
+            plan: ExecutionPlan,
+            existing_files: list[ExistingFile],
+            checks: list[CommandResult],
+        ) -> list[ExecutionStep]:
+            return [ExecutionStep(action="write_file", path="pyproject.toml", content="evil\n")]
+
+    agent = RepairingConfigAgent(plan)
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project pyproject.toml 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    response = workflow.process(
+        channel_id="C1", thread_ts="1.1", text="실행", thread_context=context, agent=agent
+    )
+
+    assert response is not None
+    assert (project / "pyproject.toml").read_text() == "applied\n"
+
+
+def test_plan_writing_more_than_two_megabytes_in_total_is_rejected(tmp_path: Path) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    names = ["a.md", "b.md", "c.md"]
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project a.md b.md c.md 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=PlanningAgent(
+            ExecutionPlan(
+                goal="대용량",
+                project_name="my-project",
+                affected_files=names,
+                steps=[
+                    ExecutionStep(action="write_file", path=name, content="x" * 800_000)
+                    for name in names
+                ],
+                verification_commands=[],
+                risk=ExecutionRisk.MODIFY,
+            )
+        ),
+    )
+
+    assert result is not None
+    assert "총 쓰기 크기" in result
+    assert not workflow.has_pending("C1", "1.1")
+    assert not any((project / name).exists() for name in names)
+
+
+def test_auto_repair_writing_more_than_one_megabyte_in_total_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("")
+    monkeypatch.setattr(
+        ProjectExecutionTools,
+        "run_check",
+        lambda _tools, name: CommandResult(name, False, "test failed"),
+    )
+    plan = ExecutionPlan(
+        goal="두 파일",
+        project_name="my-project",
+        affected_files=["a.md", "b.md"],
+        steps=[
+            ExecutionStep(action="write_file", path="a.md", content="applied\n"),
+            ExecutionStep(action="write_file", path="b.md", content="applied\n"),
+        ],
+        verification_commands=["run_tests"],
+        risk=ExecutionRisk.MODIFY,
+    )
+
+    class BigRepairAgent(PlanningAgent):
+        def create_repair_steps(
+            self,
+            plan: ExecutionPlan,
+            existing_files: list[ExistingFile],
+            checks: list[CommandResult],
+        ) -> list[ExecutionStep]:
+            return [
+                ExecutionStep(action="write_file", path=name, content="y" * 600_000)
+                for name in ("a.md", "b.md")
+            ]
+
+    agent = BigRepairAgent(plan)
+    workflow = _workflow(tmp_path)
+    context = ThreadContextStore(root=tmp_path / "context")
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project a.md b.md 수정해줘",
+        thread_context=context,
+        agent=agent,
+    )
+
+    workflow.process(
+        channel_id="C1", thread_ts="1.1", text="실행", thread_context=context, agent=agent
+    )
+
+    assert (project / "a.md").read_text() == "applied\n"
+    assert (project / "b.md").read_text() == "applied\n"
+
+
+class SequencedPlanningAgent(PlanningAgent):
+    """Returns a different plan per call and records what the planner was shown."""
+
+    def __init__(self, plans: list[ExecutionPlan]) -> None:
+        super().__init__(plans[0])
+        self.plans = plans
+        self.seen_paths: list[list[str]] = []
+
+    def create_execution_plan(
+        self,
+        request: str,
+        context: object,
+        skills: object,
+        existing_files: list[ExistingFile],
+    ) -> ExecutionPlan:
+        self.seen_paths.append([item.relative_path for item in existing_files])
+        plan = self.plans[min(self.calls, len(self.plans) - 1)]
+        self.calls += 1
+        return plan
+
+
+def _write_plan(*paths: str) -> ExecutionPlan:
+    return ExecutionPlan(
+        goal="수정",
+        project_name="my-project",
+        affected_files=list(paths),
+        steps=[ExecutionStep(action="write_file", path=path, content="new\n") for path in paths],
+        verification_commands=[],
+        risk=ExecutionRisk.MODIFY,
+    )
+
+
+def _unseen_file_project(tmp_path: Path) -> Path:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    for name in ("a.md", "b.md", "c.md"):
+        (project / name).write_text("old\n")
+    return project
+
+
+def _ask(workflow: ExecutionWorkflow, tmp_path: Path, agent: PlanningAgent) -> str | None:
+    return workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project a.md 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=agent,
+    )
+
+
+def test_plan_touching_an_unseen_existing_file_is_replanned_with_that_file_shown(
+    tmp_path: Path,
+) -> None:
+    _unseen_file_project(tmp_path)
+    agent = SequencedPlanningAgent([_write_plan("a.md", "b.md")])
+    workflow = _workflow(tmp_path)
+
+    _ask(workflow, tmp_path, agent)
+
+    assert agent.calls == 2
+    assert agent.seen_paths == [["a.md"], ["a.md", "b.md"]]
+    assert workflow.has_pending("C1", "1.1")
+
+
+def test_plan_still_touching_an_unseen_existing_file_after_replanning_is_rejected(
+    tmp_path: Path,
+) -> None:
+    project = _unseen_file_project(tmp_path)
+    agent = SequencedPlanningAgent([_write_plan("a.md", "b.md"), _write_plan("a.md", "c.md")])
+    workflow = _workflow(tmp_path)
+
+    result = _ask(workflow, tmp_path, agent)
+
+    assert result is not None
+    assert "보지 못한" in result
+    assert not workflow.has_pending("C1", "1.1")
+    assert (project / "c.md").read_text() == "old\n"
+
+
+def test_proposing_a_new_file_does_not_trigger_replanning(tmp_path: Path) -> None:
+    _unseen_file_project(tmp_path)
+    agent = SequencedPlanningAgent([_write_plan("a.md", "docs/new.md")])
+    workflow = _workflow(tmp_path)
+
+    _ask(workflow, tmp_path, agent)
+
+    assert agent.calls == 1
+    assert workflow.has_pending("C1", "1.1")
