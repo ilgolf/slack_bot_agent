@@ -25,9 +25,11 @@ from claude_agent_sdk import (
 )
 
 from src.code_agent_analysis import RunnerError, RunnerResult, RunnerTimeout
+from src.edit_guard import is_allowed_tool_call
 from src.read_path_guard import is_allowed_read
 
 _READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
+_EDIT_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit"]
 
 QueryFn = Callable[[str, ClaudeAgentOptions], AsyncIterator[Message]]
 
@@ -51,6 +53,21 @@ class ClaudeSdkRunner:
         return self._execute(
             prompt, read_only_options(cwd=cwd, max_turns=max_turns), timeout_seconds
         )
+
+    def edit(
+        self,
+        prompt: str,
+        *,
+        cwd: Path,
+        timeout_seconds: float,
+        max_turns: int,
+        max_budget_usd: float,
+        named_paths: frozenset[str] = frozenset(),
+    ) -> RunnerResult:
+        options = edit_options(
+            cwd=cwd, max_turns=max_turns, max_budget_usd=max_budget_usd, named_paths=named_paths
+        )
+        return self._execute(prompt, options, timeout_seconds)
 
     def complete(self, prompt: str, *, timeout_seconds: float) -> str:
         """Answer from the prompt alone: no tools, one turn, an empty scratch directory."""
@@ -121,6 +138,38 @@ def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
                     lambda tool, tool_input: is_allowed_read(project_root, tool, tool_input),
                     "프로젝트 밖 경로는 읽을 수 없습니다.",
                     _READ_ONLY_TOOLS,
+                )
+            ]
+        },
+    )
+
+
+def edit_options(
+    *,
+    cwd: Path,
+    max_turns: int,
+    max_budget_usd: float,
+    named_paths: frozenset[str] = frozenset(),
+) -> ClaudeAgentOptions:
+    """Edit mode: file tools only (no shell), every call judged by `edit_guard` before it
+    runs. `cwd` must be the thread worktree, never the original checkout."""
+    worktree = Path(cwd)
+    return ClaudeAgentOptions(
+        tools=list(_EDIT_TOOLS),
+        allowed_tools=list(_EDIT_TOOLS),
+        cwd=cwd,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+        setting_sources=[],
+        permission_mode="dontAsk",
+        hooks={
+            "PreToolUse": [
+                _pre_tool_use_guard(
+                    lambda tool, tool_input: is_allowed_tool_call(
+                        worktree, tool, tool_input, named_paths=named_paths
+                    ),
+                    "이 작업은 허용되지 않습니다.",
+                    _EDIT_TOOLS,
                 )
             ]
         },

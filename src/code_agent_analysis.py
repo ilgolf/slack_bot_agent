@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
@@ -42,6 +43,9 @@ _PROMPT_TEMPLATE = (
 )
 _DEFAULT_TIMEOUT_SECONDS = 300.0
 _DEFAULT_MAX_TURNS = 20
+_DEFAULT_EDIT_TIMEOUT_SECONDS = 600.0
+_DEFAULT_EDIT_MAX_TURNS = 40
+_DEFAULT_EDIT_MAX_BUDGET_USD = 3.0
 
 
 class RunnerError(Exception):
@@ -77,7 +81,13 @@ class CodeAgentAnalysisAgent:
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         max_turns: int = _DEFAULT_MAX_TURNS,
         thread_trace_store: ThreadTraceStore | None = None,
+        edit_timeout_seconds: float = _DEFAULT_EDIT_TIMEOUT_SECONDS,
+        edit_max_turns: int = _DEFAULT_EDIT_MAX_TURNS,
+        edit_max_budget_usd: float = _DEFAULT_EDIT_MAX_BUDGET_USD,
     ) -> None:
+        self.edit_timeout_seconds = edit_timeout_seconds
+        self.edit_max_turns = edit_max_turns
+        self.edit_max_budget_usd = edit_max_budget_usd
         self.runner = runner
         self.project_resolver = project_resolver
         self.timeout_seconds = timeout_seconds
@@ -151,16 +161,67 @@ class CodeAgentAnalysisAgent:
         text = self._complete("repair", prompt, plan.project_name, channel_id, thread_ts)
         return parse_repair_response(text)
 
+    @property
+    def supports_edit(self) -> bool:
+        return callable(getattr(self.runner, "edit", None))
+
+    def edit_code(
+        self,
+        prompt: str,
+        worktree: Path,
+        *,
+        project_name: str,
+        named_paths: frozenset[str] = frozenset(),
+        channel_id: str = "-",
+        thread_ts: str = "-",
+    ) -> str:
+        """Let the runner edit files inside `worktree`; returns the agent's final text."""
+        edit = getattr(self.runner, "edit", None)
+        if not callable(edit):
+            raise AnalysisAgentError("이 코드 에이전트는 파일 편집을 지원하지 않습니다.")
+        return self._traced(
+            "edit",
+            project_name,
+            channel_id,
+            thread_ts,
+            lambda: (
+                edit(
+                    prompt,
+                    cwd=worktree,
+                    timeout_seconds=self.edit_timeout_seconds,
+                    max_turns=self.edit_max_turns,
+                    max_budget_usd=self.edit_max_budget_usd,
+                    named_paths=named_paths,
+                ).text
+            ),
+        )
+
     def _complete(
         self, phase: str, prompt: str, project_name: str, channel_id: str, thread_ts: str
     ) -> str:
-        """One text-only runner call. Runner failures never surface their message;
-        the trace step carries only the runner name and outcome."""
-        trace = self._trace_for(channel_id, thread_ts, project_name)
+        return self._traced(
+            phase,
+            project_name,
+            channel_id,
+            thread_ts,
+            lambda: self.runner.complete(prompt, timeout_seconds=self.timeout_seconds),
+        )
+
+    def _traced(
+        self,
+        phase: str,
+        project_name: str,
+        channel_id: str,
+        thread_ts: str,
+        call: Callable[[], str],
+    ) -> str:
+        """One runner call. Runner failures never surface their message; the trace step
+        carries only the runner name and outcome."""
+        trace = self._trace_for(channel_id, thread_ts, project_name, phase)
         started_at = monotonic()
         outcome = "error"
         try:
-            text = self.runner.complete(prompt, timeout_seconds=self.timeout_seconds)
+            text = call()
             outcome = "ok"
             return text
         except RunnerTimeout:
@@ -172,17 +233,19 @@ class CodeAgentAnalysisAgent:
             trace.record_tool(
                 phase=phase,
                 tool_name=self.runner.name,
-                category="project_read",
+                category="project_write" if phase == "edit" else "project_read",
                 outcome=outcome,
                 started_at=started_at,
             )
 
-    def _trace_for(self, channel_id: str, thread_ts: str, project_name: str) -> AgentTraceRecorder:
+    def _trace_for(
+        self, channel_id: str, thread_ts: str, project_name: str, phase: str
+    ) -> AgentTraceRecorder:
         trace = self.thread_trace_store.get(channel_id, thread_ts)
         if trace is None:
             trace = AgentTraceRecorder(
                 request_id=uuid.uuid4().hex[:12],
-                intent="code_plan",
+                intent="code_edit" if phase == "edit" else "code_plan",
                 selected_project=project_name,
             )
             self.thread_trace_store.put(channel_id, thread_ts, trace)

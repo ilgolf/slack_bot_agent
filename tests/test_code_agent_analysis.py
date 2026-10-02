@@ -437,3 +437,94 @@ def test_plan_and_repair_generation_each_record_a_content_free_trace_step(
         ("repair", "claude_code", "timeout"),
     ]
     assert all(s.input_fields == () and s.evidence_refs == () for s in trace.steps)
+
+
+# --- Phase 18, B: edit_code ----------------------------------------------------------
+
+
+@dataclass
+class FakeEditRunner(FakeRunner):
+    edit_calls: list[dict[str, object]] = field(default_factory=list)
+    edit_error: Exception | None = None
+    edit_output: str = "고쳤습니다"
+
+    def edit(self, prompt: str, **kwargs: object) -> RunnerResult:
+        self.edit_calls.append({"prompt": prompt, **kwargs})
+        if self.edit_error is not None:
+            raise self.edit_error
+        return RunnerResult(text=self.edit_output)
+
+
+def _edit_agent(
+    tmp_path: Path, runner: FakeRunner, store: ThreadTraceStore | None = None
+) -> CodeAgentAnalysisAgent:
+    return CodeAgentAnalysisAgent(
+        runner=runner,
+        project_resolver=ProjectResolver(root=tmp_path),
+        thread_trace_store=store,
+        edit_timeout_seconds=111.0,
+        edit_max_turns=22,
+        edit_max_budget_usd=3.5,
+    )
+
+
+def test_edit_code_runs_the_runner_edit_in_the_worktree_with_the_configured_limits(
+    tmp_path: Path,
+) -> None:
+    runner = FakeEditRunner()
+    agent = _edit_agent(tmp_path, runner)
+
+    text = agent.edit_code(
+        "수정해", tmp_path / "wt", project_name="demo", named_paths=frozenset({"plan.md"})
+    )
+
+    assert text == "고쳤습니다"
+    assert agent.supports_edit is True
+    assert runner.edit_calls == [
+        {
+            "prompt": "수정해",
+            "cwd": tmp_path / "wt",
+            "timeout_seconds": 111.0,
+            "max_turns": 22,
+            "max_budget_usd": 3.5,
+            "named_paths": frozenset({"plan.md"}),
+        }
+    ]
+    assert runner.calls == [] and runner.complete_calls == []
+
+
+@pytest.mark.parametrize("error", [RunnerTimeout(), RunnerError("SECRET sdk output")])
+def test_edit_code_hides_runner_failures(tmp_path: Path, error: Exception) -> None:
+    agent = _edit_agent(tmp_path, FakeEditRunner(edit_error=error))
+
+    with pytest.raises(AnalysisAgentError) as raised:
+        agent.edit_code("수정해", tmp_path, project_name="demo")
+
+    assert "SECRET" not in str(raised.value)
+
+
+def test_edit_code_records_a_content_free_edit_trace_step(tmp_path: Path) -> None:
+    store = ThreadTraceStore()
+    runner = FakeEditRunner(name="claude_code")
+    agent = _edit_agent(tmp_path, runner, store)
+
+    agent.edit_code("수정해", tmp_path, project_name="demo", channel_id="C1", thread_ts="1.0")
+    runner.edit_error = RunnerTimeout()
+    with pytest.raises(AnalysisAgentError):
+        agent.edit_code("수정해", tmp_path, project_name="demo", channel_id="C1", thread_ts="1.0")
+
+    trace = store.get("C1", "1.0")
+    assert trace is not None
+    assert [(s.phase, s.tool_name, s.outcome) for s in trace.steps] == [
+        ("edit", "claude_code", "ok"),
+        ("edit", "claude_code", "timeout"),
+    ]
+    assert all(s.input_fields == () and s.evidence_refs == () for s in trace.steps)
+
+
+def test_a_runner_without_edit_is_not_edit_capable(tmp_path: Path) -> None:
+    agent = _edit_agent(tmp_path, FakeRunner())
+
+    assert agent.supports_edit is False
+    with pytest.raises(AnalysisAgentError):
+        agent.edit_code("수정해", tmp_path, project_name="demo")
