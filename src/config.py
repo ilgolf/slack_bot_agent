@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # Root directory that local projects are resolved under (see src.project_resolver)
     projects_root: str = "~/orca/projects"
 
+    # Root directory for per-thread git worktrees of code work (see src.thread_workspace)
+    worktrees_root: str = "~/.slack_bot_agent/worktrees"
+
     # Root directory for the per-thread markdown context store (see src.thread_context)
     thread_context_root: str = "./thread-context"
 

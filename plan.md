@@ -39,37 +39,38 @@
 ## 테스트 목록 (위에서부터 하나씩)
 
 ### A. git 호출 allowlist (`src/thread_workspace.py`, 가짜 git 실행기)
-- [ ] 허용 목록 밖 하위 명령(`push`·`merge`·`reset`·`checkout`·`config`·`rebase`)은 실행하지 않고 `ValueError`를 낸다
-- [ ] 모든 호출에 `-c core.hooksPath=/dev/null`이 붙고 셸을 쓰지 않는다
-- [ ] `branch -D`는 `bot/` 접두 브랜치만 허용한다
+- [x] 허용 목록 밖 하위 명령(`push`·`merge`·`reset`·`checkout`·`config`·`rebase`)은 실행하지 않고 `ValueError`를 낸다
+- [x] 모든 호출에 `-c core.hooksPath=/dev/null`이 붙고 셸을 쓰지 않는다
+- [x] `branch -D`는 `bot/` 접두 브랜치만 허용한다
 
 ### B. worktree 생명주기 (실제 임시 git 저장소)
-- [ ] Git 저장소가 아닌 프로젝트는 worktree를 만들지 않는다
-- [ ] 스레드용 worktree를 `WORKTREES_ROOT/<프로젝트>/<스레드키>`에 `bot/<스레드키>` 브랜치로, 원본 `HEAD`에서 만든다
-- [ ] 같은 스레드의 두 번째 요청은 기존 worktree를 재사용하고, 다른 스레드는 별도 worktree를 만든다
-- [ ] 스레드키는 안전한 문자만 쓰고, `../`나 `-`로 시작하는 값으로 경로·옵션을 주입할 수 없다
-- [ ] 프로젝트의 `post-checkout` hook이 있어도 worktree 생성 중 실행되지 않는다
-- [ ] 승인 파일에 원본 미커밋 변경이 있으면 `UncommittedChanges`로 거부한다 (없으면 통과)
-- [ ] 변경 커밋은 지정 파일만 올리고, 고정 작성자·한 줄 72자 메시지를 쓰며, `pre-commit` hook을 실행하지 않는다
-- [ ] 커밋 뒤에도 원본의 브랜치·`HEAD`·작업 트리 파일은 변하지 않는다
-- [ ] 폐기는 worktree와 브랜치를 지우고 원본을 건드리지 않으며, 없는 스레드의 폐기는 안내만 한다
+- [x] Git 저장소가 아닌 프로젝트는 worktree를 만들지 않는다
+- [x] 스레드용 worktree를 `WORKTREES_ROOT/<프로젝트>/<스레드키>`에 `bot/<스레드키>` 브랜치로, 원본 `HEAD`에서 만든다
+- [x] 같은 스레드의 두 번째 요청은 기존 worktree를 재사용하고, 다른 스레드는 별도 worktree를 만든다
+- [x] 스레드키는 안전한 문자만 쓰고, `../`나 `-`로 시작하는 값으로 경로·옵션을 주입할 수 없다
+- [x] 프로젝트의 `post-checkout` hook이 있어도 worktree 생성 중 실행되지 않는다
+- [x] 승인 파일에 원본 미커밋 변경이 있으면 `UncommittedChanges`로 거부한다 (없으면 통과)
+- [x] 변경 커밋은 지정 파일만 올리고, 고정 작성자·한 줄 72자 메시지를 쓰며, `pre-commit` hook을 실행하지 않는다
+- [x] 커밋 뒤에도 원본의 브랜치·`HEAD`·작업 트리 파일은 변하지 않는다
+- [x] 폐기는 worktree와 브랜치를 지우고 원본을 건드리지 않으며, 없는 스레드의 폐기는 안내만 한다
 
 ### C. 설정
-- [ ] `WORKTREES_ROOT` 설정의 기본값은 `~/.slack_bot_agent/worktrees`이고 환경변수로 바꿀 수 있다
+- [x] `WORKTREES_ROOT` 설정의 기본값은 `~/.slack_bot_agent/worktrees`이고 환경변수로 바꿀 수 있다
 
 ### D. 워크플로 연결
-- [ ] Git 저장소 프로젝트의 `실행`은 원본 파일을 바꾸지 않고 worktree에 쓴다
-- [ ] 고정 검증 명령은 worktree를 `cwd`로 실행한다
-- [ ] 자동 복구도 worktree에 쓴다
-- [ ] 실행 결과에 브랜치명·worktree 경로·`폐기` 안내가 들어간다
-- [ ] 승인 파일에 원본 미커밋 변경이 있으면 실행을 거부하고 아무것도 쓰지 않는다
-- [ ] Git 저장소가 아닌 프로젝트는 기존처럼 원본에 쓰고 미리보기·결과에 "롤백 불가" 경고가 붙는다
-- [ ] 스레드에 worktree가 이미 있으면 다음 계획은 그 worktree의 파일 내용을 플래너에 보여 준다
-- [ ] `폐기` 메시지는 그 스레드의 worktree를 지우고 응답하며, 다른 스레드의 worktree는 그대로다
-- [ ] worktree 생성 실패(git 오류)는 원문 없이 안내 문구로 응답하고 코드 작업 상태가 `FAILED`가 되며 원본은 변하지 않는다
+- [x] Git 저장소 프로젝트의 `실행`은 원본 파일을 바꾸지 않고 worktree에 쓴다
+- [x] 고정 검증 명령은 worktree를 `cwd`로 실행한다
+- [x] 자동 복구도 worktree에 쓴다
+- [x] 실행 결과에 브랜치명·worktree 경로·`폐기` 안내가 들어간다
+- [x] 승인 파일에 원본 미커밋 변경이 있으면 실행을 거부하고 아무것도 쓰지 않는다
+- [x] Git 저장소가 아닌 프로젝트는 기존처럼 원본에 쓰고 미리보기·결과에 "롤백 불가" 경고가 붙는다
+- [x] 스레드에 worktree가 이미 있으면 다음 계획은 그 worktree의 파일 내용을 플래너에 보여 준다
+- [x] `폐기` 메시지는 그 스레드의 worktree를 지우고 응답하며, 다른 스레드의 worktree는 그대로다
+- [x] worktree 생성 실패(git 오류)는 원문 없이 안내 문구로 응답하고 코드 작업 상태가 `FAILED`가 되며 원본은 변하지 않는다
 
 ## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
 
-- [ ] 작업 폴더의 임시 git 저장소로 실제 `claude_code` 러너와 `ExecutionWorkflow`를 돌려 계획 → `실행` 후 worktree에 변경과 커밋이 생기고 원본 `git status`가 깨끗한지 확인한다
-- [ ] `폐기` 뒤 worktree 디렉터리와 `bot/…` 브랜치가 사라지고 `git worktree list`에 남지 않는지 확인한다
+- [x] 작업 폴더의 임시 git 저장소로 실제 `claude_code` 러너와 `ExecutionWorkflow`를 돌려 계획 → `실행` 후 worktree에 변경과 커밋이 생기고 원본 `git status`가 깨끗한지 확인한다
+- [x] `폐기` 뒤 worktree 디렉터리와 `bot/…` 브랜치가 사라지고 `git worktree list`에 남지 않는지 확인한다
 - [ ] Slack(Socket Mode)에서 같은 흐름을 한 번 확인한다 (쓰고 버려도 되는 Git 저장소 프로젝트)
+  - 2026-10-02 결과 (1·2번, Slack 미경유 — 스크립트로 `ExecutionWorkflow`를 직접 구동): 작업 폴더의 임시 git 저장소(`wt-test`)에 실제 `claude_code` 러너로 "src/calc.py에 subtract 추가, 테스트도 추가" 계획 → `실행`. 결과는 `✅ 구현 및 검증 완료`(`run_tests` 통과)와 함께 작업 브랜치 `bot/CM-7-7`, worktree 경로가 나왔다. worktree에는 `subtract`가 있고 커밋 `bot: src/calc.py에 subtract 함수를…`(작성자 `Slack Bot Agent <bot@localhost>`)이 생겼으며, 원본은 `git status` 깨끗하고 `subtract`가 없고 `main`이었다. `폐기` 뒤 worktree 디렉터리·`bot/*` 브랜치·`git worktree list` 항목이 모두 사라졌고 원본 `HEAD`·status는 그대로였다.

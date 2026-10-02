@@ -40,6 +40,7 @@ class RoutedRequest:
 _MENTION = re.compile(r"<@[^>]+>")
 _CONFIRM = re.compile(r"^(실행|실행해줘|실행합니다|저장|저장해줘|저장합니다)$")
 _CANCEL = re.compile(r"^(취소|취소해줘|취소합니다)$")
+_DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
 # A thread summary written to a file stays an artifact request.
 _FILE_OUTPUT_MARKERS = ("만들", "생성", "파일", "저장", "create", "write")
 # Asking about the feature is a question, not a request to run it.
@@ -99,6 +100,8 @@ class RequestRouter:
             )
         if _CANCEL.fullmatch(command):
             return RoutedRequest(RequestIntent.CONTROL_CANCEL, command, project_name, "취소")
+        if _DISCARD.fullmatch(command):
+            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
 
         if (
             _is_thread_summary_line(command_line)

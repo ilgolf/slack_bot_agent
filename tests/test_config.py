@@ -74,3 +74,21 @@ def test_agent_runner_limits_default_to_the_code_agent_adapter_defaults(
 
     assert settings.agent_runner_timeout_seconds == 300.0
     assert settings.agent_runner_max_turns == 20
+
+
+def test_worktrees_root_defaults_to_a_directory_outside_projects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("WORKTREES_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    assert Settings().worktrees_root == "~/.slack_bot_agent/worktrees"
+
+
+def test_worktrees_root_reads_from_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("WORKTREES_ROOT", "/tmp/custom-worktrees")
+    monkeypatch.chdir(tmp_path)
+
+    assert Settings().worktrees_root == "/tmp/custom-worktrees"

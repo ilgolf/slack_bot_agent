@@ -29,6 +29,7 @@ from src.request_router import RequestRouter
 from src.run_state import ThreadRunStore
 from src.slack_app import SlackConfigError, build_slack_app, handle_app_mention
 from src.thread_context import ThreadContextStore
+from src.thread_workspace import ThreadWorkspaces
 
 
 class DebugCommand(BaseModel):
@@ -49,6 +50,7 @@ def create_app(
     execution_workflow = ExecutionWorkflow(
         project_resolver=ProjectResolver(root=Path(settings.projects_root).expanduser()),
         skill_registry=SkillRegistry({"codex": "~/.codex/skills"}),
+        workspaces=ThreadWorkspaces(Path(settings.worktrees_root).expanduser()),
     )
     artifact_workflow = ArtifactGenerationWorkflow()
     linear_workflow = LinearIntegrationWorkflow(settings=settings)
