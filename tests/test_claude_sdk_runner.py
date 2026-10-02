@@ -176,3 +176,20 @@ def test_complete_runs_without_tools_in_an_empty_isolated_directory() -> None:
     assert options.setting_sources == []
     assert options.permission_mode == "dontAsk"
     assert listing == [[]]
+
+
+def test_options_deny_reads_outside_the_project_with_a_pre_tool_use_hook(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("inside")
+    options = read_only_options(cwd=tmp_path, max_turns=7)
+
+    matchers = (options.hooks or {}).get("PreToolUse", [])
+    assert [matcher.matcher for matcher in matchers] == ["Read|Grep|Glob"]
+    hook = matchers[0].hooks[0]
+
+    def decide(tool_name: str, tool_input: dict[str, str]) -> dict[str, object]:
+        event = {"hook_event_name": "PreToolUse", "tool_name": tool_name, "tool_input": tool_input}
+        return asyncio.run(hook(event, "id", {"signal": None}))  # type: ignore[arg-type]
+
+    assert decide("Read", {"file_path": str(tmp_path / "a.txt")}) == {}
+    denied = decide("Read", {"file_path": "/etc/hosts"})
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
