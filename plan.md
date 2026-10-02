@@ -48,9 +48,9 @@
 - [x] 부수효과 게이트가 그대로임을 확인한다: LLM이 `linear_mutation`/`code_work`라고 해도 `실행` 전에는 아무것도 쓰지 않고, 분류기가 틀려도 읽기 전용 경로로만 빠진다 — 분류기가 `code_work`라고 해도 미리보기만 나오고 파일은 그대로임을 코디네이터 테스트로 확인했다. 분류기는 `code_work` 외 의도를 만들 수 없다는 기존 테스트도 유지.
 
 ### D. 마무리
-- [ ] README·`.env.example`에 바뀐 동작(키워드 라우터 없음, `harness/` 위치)을 적는다
-- [ ] 정적 스캔을 다시 돌려 남은 미참조 이름이 없음을 확인하고 기록한다
-- [ ] 전체 `pytest`·`ruff`·`mypy`가 통과한다
+- [x] README·`.env.example`에 바뀐 동작(키워드 라우터 없음, `harness/` 위치)을 적는다
+- [x] 정적 스캔을 다시 돌려 남은 미참조 이름이 없음을 확인하고 기록한다 — 결과: 최상위 이름·메서드 모두 참조됨(`RequestContextFilter.filter`는 logging 오버라이드).
+- [x] 전체 `pytest`·`ruff`·`mypy`가 통과한다 — `pytest` 755건, `ruff check`, `mypy src` 통과.
 
 ## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
 
