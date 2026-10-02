@@ -25,7 +25,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Literal, Protocol
 
-from src.agent import PlanResponseFormatError
+from src.agent import AnalysisAgentError, PlanResponseFormatError
 from src.code_work_markers import (
     CODE_INTEGRATION_MARKERS,
     CODE_MARKERS,
@@ -34,6 +34,7 @@ from src.code_work_markers import (
     PLAN_CONTINUATION_MARKERS,
     is_plan_follow_work_request,
 )
+from src.edit_review import review_worktree
 from src.message_text import content_text
 from src.plan_guard import (
     MAX_WRITE_BYTES,
@@ -647,6 +648,20 @@ def _read_existing_files(root: Path, target_paths: list[str]) -> list[ExistingFi
     return files
 
 
+def _edit_named_paths(command_text: str) -> list[str]:
+    """Files the user named in this message, which the edit agent may touch even if they are
+    management or code-executing files; a plan-authoring request names plan.md."""
+    follow = _is_plan_follow_request(command_text)
+    named = [
+        path
+        for path in _PATH_IN_REQUEST.findall(command_text)
+        if not (follow and is_protected_meta_path(path))
+    ]
+    if not follow and any(marker in command_text.casefold() for marker in PLAN_AUTHORING_MARKERS):
+        named.append("plan.md")
+    return list(dict.fromkeys(named))
+
+
 def _is_guarded_path(path: str) -> bool:
     return is_protected_meta_path(path) or is_risky_path(path) or is_secret_path(path)
 
@@ -691,8 +706,10 @@ class ExecutionWorkflow:
         code_work_state_store: CodeWorkStateStore | None = None,
         max_autopilot_items: int = DEFAULT_MAX_AUTOPILOT_ITEMS,
         workspaces: ThreadWorkspaces | None = None,
+        code_work_mode: str = "plan",
     ) -> None:
         self.workspaces = workspaces
+        self.code_work_mode = code_work_mode
         self.max_autopilot_items = max_autopilot_items
         self._autopilot_active: set[tuple[str, str]] = set()
         self._autopilot_cancelled: set[tuple[str, str]] = set()
@@ -790,6 +807,11 @@ class ExecutionWorkflow:
         if autopilot and not auto_execute:
             return self._run_autopilot(
                 project_name, channel_id, thread_ts, thread_context, agent, on_progress
+            )
+        edit_root = None if autopilot else self._direct_edit_root(agent, project_name)
+        if edit_root is not None:
+            return self._edit_directly(
+                edit_root, project_name, channel_id, thread_ts, command_text, contextual_text, agent
             )
         creator = getattr(agent, "create_execution_plan", None)
         if not callable(creator):
@@ -1142,6 +1164,181 @@ class ExecutionWorkflow:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return "보류된 실행 계획이 만료되었습니다. 파일은 변경하지 않았습니다."
         return None
+
+    def _direct_edit_root(self, agent: object, project_name: str) -> Path | None:
+        """The project root when the agent should edit a worktree directly: edit mode is
+        on, the agent can edit, and the project can be isolated. Otherwise `None`."""
+        if self.code_work_mode != "edit" or self.workspaces is None:
+            return None
+        if not getattr(agent, "supports_edit", False):
+            return None
+        try:
+            root = self.project_resolver.resolve(project_name).resolve()
+        except (InvalidProjectName, UnknownProject, AmbiguousProject):
+            return None
+        return root if self.workspaces.can_isolate(root) else None
+
+    def _edit_directly(
+        self,
+        root: Path,
+        project_name: str,
+        channel_id: str,
+        thread_ts: str,
+        command_text: str,
+        contextual_text: str,
+        agent: object,
+    ) -> str:
+        from src.code_plan_prompts import build_edit_prompt, build_edit_repair_prompt
+
+        assert self.workspaces is not None
+        workspaces = self.workspaces
+        edit = getattr(agent, "edit_code")  # noqa: B009 - checked by _direct_edit_root
+        named = frozenset(_edit_named_paths(command_text))
+        self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IMPLEMENTING)
+        try:
+            worktree = workspaces.ensure(root, project_name, channel_id, thread_ts)
+        except WorkspaceError as exc:
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+            return f"❌ 실행하지 못했습니다. 파일은 변경하지 않았습니다.\n{exc}"
+        if worktree is None:
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+            return "❌ 이 프로젝트는 worktree로 격리할 수 없어 직접 편집하지 않았습니다."
+
+        def run_edit(prompt: str) -> str:
+            return str(
+                edit(
+                    prompt,
+                    worktree,
+                    project_name=project_name,
+                    named_paths=named,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                )
+            )
+
+        goal = command_text.strip().splitlines()[0] if command_text.strip() else "코드 작업"
+        try:
+            agent_text = run_edit(build_edit_prompt(contextual_text, named))
+        except AnalysisAgentError as exc:
+            return self._edit_interrupted(channel_id, thread_ts, exc)
+        review = review_worktree(workspaces.git, worktree, named_paths=named)
+        if not review.ok:
+            return self._edit_rejected(project_name, channel_id, thread_ts, review.violations)
+        if not review.changed_files:
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IDLE)
+            return (
+                "코드 에이전트가 파일을 변경하지 않았습니다.\n"
+                f"에이전트 응답: {agent_text.strip()[:1500] or '(없음)'}"
+            )
+
+        plan = ExecutionPlan(
+            goal=goal,
+            project_name=project_name,
+            affected_files=list(review.changed_files),
+            steps=[],
+            verification_commands=["run_tests"] if (worktree / "pyproject.toml").exists() else [],
+            risk=ExecutionRisk.MODIFY,
+        )
+        tools = ProjectExecutionTools(worktree, review.changed_files)
+        checks = self._run_verifications(
+            channel_id, thread_ts, plan, tools, list(review.changed_files)
+        )
+        repair_attempts = 0
+        repair_failure_reason: str | None = None
+        failure_fingerprints = {_verification_fingerprint(checks)}
+        while not all(check.success for check in checks):
+            if repair_attempts >= DEFAULT_MAX_AUTO_REPAIRS:
+                repair_failure_reason = "자동 복구 한도 초과"
+                break
+            repair_attempts += 1
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.REPAIRING)
+            try:
+                run_edit(build_edit_repair_prompt(contextual_text, review.changed_files, checks))
+            except AnalysisAgentError as exc:
+                return self._edit_interrupted(channel_id, thread_ts, exc)
+            review = review_worktree(workspaces.git, worktree, named_paths=named)
+            if not review.ok:
+                return self._edit_rejected(project_name, channel_id, thread_ts, review.violations)
+            plan = replace(plan, affected_files=list(review.changed_files))
+            tools = ProjectExecutionTools(worktree, review.changed_files)
+            checks = self._run_verifications(
+                channel_id, thread_ts, plan, tools, list(review.changed_files)
+            )
+            fingerprint = _verification_fingerprint(checks)
+            if not all(check.success for check in checks) and fingerprint in failure_fingerprints:
+                repair_failure_reason = "동일한 검증 실패가 반복되었습니다"
+                break
+            failure_fingerprints.add(fingerprint)
+
+        risks = _remaining_risks(checks)
+        try:
+            workspaces.commit(worktree, review.changed_files, goal)
+            dirty = workspaces.dirty_files(root, review.changed_files)
+        except WorkspaceError as exc:
+            logger.warning("workspace_commit_failed project=%s", project_name)
+            risks.append(f"{exc} worktree의 변경은 커밋되지 않았습니다.")
+            dirty = []
+        if dirty:
+            listed = ", ".join(f"`{path}`" for path in dirty)
+            risks.append(
+                f"원본 체크아웃에 커밋하지 않은 변경이 있는 파일과 겹칩니다: {listed}. "
+                "에이전트는 커밋된 내용(HEAD)을 기준으로 작업했습니다."
+            )
+        result = ExecutionResult(
+            changed_files=list(review.changed_files),
+            diffs=list(review.diffs),
+            checks=checks,
+            remaining_risks=risks,
+            repair_attempts=repair_attempts,
+            repair_failure_reason=repair_failure_reason,
+            workspace_branch=workspaces.branch_name(channel_id, thread_ts),
+            workspace_path=str(worktree),
+        )
+        self._last_results[(channel_id, thread_ts)] = result
+        succeeded = all(check.success for check in checks)
+        self._set_code_work_state(
+            channel_id, thread_ts, CodeWorkState.SUCCEEDED if succeeded else CodeWorkState.FAILED
+        )
+        self._record_execution_trace(
+            agent,
+            channel_id,
+            thread_ts,
+            repair_attempts=repair_attempts,
+            termination_reason=repair_failure_reason
+            or ("verified" if succeeded else "verification_failed"),
+        )
+        previews = "\n\n".join(
+            f"`{path}`:\n```\n{_render_diff_excerpt(diff)}\n```"
+            for path, diff in zip(review.changed_files, review.diffs, strict=False)
+        )
+        return f"{render_execution_result(plan, result)}\n\n변경 내용:\n{previews}"
+
+    def _edit_interrupted(self, channel_id: str, thread_ts: str, exc: Exception) -> str:
+        self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+        return (
+            f"❌ 코드 에이전트 편집이 중단됐습니다: {exc}\n"
+            "worktree에 일부 변경이 남아 있을 수 있습니다. 버리려면 `폐기`라고 보내세요."
+        )
+
+    def _edit_rejected(
+        self, project_name: str, channel_id: str, thread_ts: str, violations: list[str]
+    ) -> str:
+        """The review is the authoritative gate: any violation throws the worktree away."""
+        logger.warning("edit_rejected project=%s violations=%d", project_name, len(violations))
+        discarded = True
+        try:
+            assert self.workspaces is not None
+            self.workspaces.discard_thread(channel_id, thread_ts)
+        except WorkspaceError:
+            discarded = False
+        self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+        listed = "\n".join(f"- {violation}" for violation in violations)
+        outcome = (
+            "작업 브랜치와 worktree를 폐기했습니다. 원본 체크아웃은 변경하지 않았습니다."
+            if discarded
+            else "worktree를 폐기하지 못했습니다. `폐기`라고 보내 정리해 주세요."
+        )
+        return f"❌ 코드 에이전트의 변경이 안전 검사를 통과하지 못했습니다.\n{listed}\n{outcome}"
 
     def _discard(self, channel_id: str, thread_ts: str) -> str:
         none_message = "폐기할 작업 브랜치(worktree)가 없습니다."

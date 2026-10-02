@@ -110,6 +110,10 @@ class ThreadWorkspaces:
     def branch_name(self, channel_id: str, thread_ts: str) -> str:
         return BOT_BRANCH_PREFIX + thread_key(channel_id, thread_ts)
 
+    @property
+    def git(self) -> GitCommands:
+        return self._git
+
     def worktree_path(self, project_name: str, channel_id: str, thread_ts: str) -> Path:
         return self._root / (_safe(project_name) or "project") / thread_key(channel_id, thread_ts)
 
@@ -135,12 +139,16 @@ class ThreadWorkspaces:
             raise WorkspaceError("작업용 worktree를 만들지 못했습니다.") from None
         return path
 
-    def check_clean(self, project_root: Path, paths: list[str]) -> None:
+    def dirty_files(self, project_root: Path, paths: list[str]) -> list[str]:
+        """Which of `paths` have uncommitted changes (or are untracked) in the checkout."""
         try:
             status = self._git(project_root, "status", "--porcelain", "--", *paths)
         except RuntimeError:
             raise WorkspaceError("원본 체크아웃의 상태를 확인하지 못했습니다.") from None
-        dirty = [line[3:] for line in status.splitlines() if line.strip()]
+        return [line[3:] for line in status.splitlines() if line.strip()]
+
+    def check_clean(self, project_root: Path, paths: list[str]) -> None:
+        dirty = self.dirty_files(project_root, paths)
         if dirty:
             raise UncommittedChanges(dirty)
 
