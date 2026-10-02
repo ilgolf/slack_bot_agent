@@ -6,7 +6,6 @@ from pathlib import Path
 
 from src.agent import AnalysisResult
 from src.agent_trace import AgentTraceRecorder, ThreadTraceStore
-from src.artifact_generation import ArtifactDraft, ArtifactGenerationWorkflow
 from src.config import Settings
 from src.execution_workflow import ExecutionPlan, ExecutionRisk, ExecutionStep, ExecutionWorkflow
 from src.linear_workflow import LinearIntegrationWorkflow
@@ -90,7 +89,6 @@ def test_fresh_thread_plan_follow_up_phrase_reaches_code_work_without_prior_cont
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     context = ThreadContextStore(root=tmp_path / "context")
@@ -115,7 +113,6 @@ def test_execute_confirmation_consumes_pending_code_plan(tmp_path: Path) -> None
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     context = ThreadContextStore(root=tmp_path / "context")
@@ -149,7 +146,6 @@ def test_design_question_preserves_pending_code_plan(tmp_path: Path) -> None:
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     context = ThreadContextStore(root=tmp_path / "context")
@@ -188,7 +184,6 @@ def test_ambiguous_follow_up_gets_clarification_instead_of_general_analysis(
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     context = ThreadContextStore(root=tmp_path / "context")
@@ -215,58 +210,6 @@ def test_ambiguous_follow_up_gets_clarification_instead_of_general_analysis(
     assert "README.md" in follow_up
 
 
-class ArtifactAndAnalysisAgent:
-    """Owns an artifact pending action but no code plan — the clarification
-    gate must key off `execution_workflow.has_pending`, not "some workflow has
-    something pending"."""
-
-    def create_artifact_draft(self, thread_context: str, destination: Path) -> ArtifactDraft:
-        del thread_context
-        return ArtifactDraft(destination=destination, kind="text", content="draft")
-
-    def analyze(
-        self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
-    ) -> AnalysisResult:
-        del channel_id, thread_ts
-        return AnalysisResult(summary=f"분석: {question}", findings=[])
-
-
-def test_ambiguous_follow_up_is_unaffected_by_an_unrelated_pending_artifact(
-    tmp_path: Path,
-) -> None:
-    """A pending *artifact* draft (not a code plan) must not trigger the code
-    plan's clarification — each workflow's pending action stays its own."""
-    coordinator = RequestCoordinator(
-        router=RequestRouter(),
-        execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
-        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
-    )
-    context = ThreadContextStore(root=tmp_path / "context")
-    agent = ArtifactAndAnalysisAgent()
-
-    _, preview = coordinator.process(
-        channel_id="C1",
-        thread_ts="1.1",
-        text="이메일 목록 정리해줘",
-        thread_context=context,
-        agent=agent,
-    )
-    assert coordinator.artifact_workflow.has_pending("C1", "1.1")
-    assert not coordinator.execution_workflow.has_pending("C1", "1.1")
-
-    _, follow_up = coordinator.process(
-        channel_id="C1",
-        thread_ts="1.1",
-        text="작업해",
-        thread_context=context,
-        agent=agent,
-    )
-
-    assert "보류 중인" not in follow_up
-    assert "분석:" in follow_up
-
-
 def test_bare_project_name_reply_resumes_a_stalled_code_work_request(tmp_path: Path) -> None:
     """The router alone can't classify a bare project name as code work, so
     the coordinator must give a stalled ("awaiting project name") request one
@@ -276,7 +219,6 @@ def test_bare_project_name_reply_resumes_a_stalled_code_work_request(tmp_path: P
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     context = ThreadContextStore(root=tmp_path / "context")
@@ -315,7 +257,6 @@ def test_completed_code_work_lets_natural_continuation_phrase_start_new_plan(
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     context = ThreadContextStore(root=tmp_path / "context")
@@ -370,7 +311,6 @@ def test_ambiguous_project_after_multiple_completed_plans_asks_for_choice(
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     context = ThreadContextStore(root=tmp_path / "context")
@@ -409,7 +349,6 @@ def test_trace_summary_uses_current_thread_key_from_thread_trace_store(tmp_path:
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     context = ThreadContextStore(root=tmp_path / "context")

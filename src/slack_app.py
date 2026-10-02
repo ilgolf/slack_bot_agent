@@ -14,10 +14,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from src.agent import AnalysisAgent
-from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings
-from src.dispatch import dispatch_command
-from src.execution_workflow import ExecutionWorkflow
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.llm_intent_classifier import build_intent_classifier
 from src.observability import request_log_context
@@ -41,11 +38,8 @@ def handle_app_mention(
     *,
     thread_context: ThreadContextStore,
     agent: AnalysisAgent,
+    coordinator: RequestCoordinator,
     run_store: ThreadRunStore | None = None,
-    artifact_workflow: ArtifactGenerationWorkflow | None = None,
-    execution_workflow: ExecutionWorkflow | None = None,
-    linear_workflow: LinearIntegrationWorkflow | None = None,
-    coordinator: RequestCoordinator | None = None,
     client: Any | None = None,
 ) -> None:
     channel_id = event["channel"]
@@ -61,16 +55,13 @@ def handle_app_mention(
         return
 
     initial_status = "분석 중입니다…"
-    if coordinator is not None:
-        intent = coordinator.router.route(text).intent
-        if intent is RequestIntent.CODE_WORK:
-            initial_status = "계획 중입니다…"
-        elif intent in {RequestIntent.LINEAR_READ, RequestIntent.LINEAR_MUTATION}:
-            initial_status = "Linear 작업 중입니다…"
-        elif intent is RequestIntent.ARTIFACT_GENERATION:
-            initial_status = "파일 초안 생성 중입니다…"
-        elif intent is RequestIntent.THREAD_SUMMARY:
-            initial_status = "스레드 요약 중입니다…"
+    intent = coordinator.router.route(text).intent
+    if intent is RequestIntent.CODE_WORK:
+        initial_status = "계획 중입니다…"
+    elif intent in {RequestIntent.LINEAR_READ, RequestIntent.LINEAR_MUTATION}:
+        initial_status = "Linear 작업 중입니다…"
+    elif intent is RequestIntent.THREAD_SUMMARY:
+        initial_status = "스레드 요약 중입니다…"
     status_message = say(text=initial_status, thread_ts=thread_ts)
     on_progress = _progress_updater(client, channel_id, status_message)
     if run_store is not None:
@@ -78,53 +69,14 @@ def handle_app_mention(
 
     with request_log_context(uuid4().hex, channel_id, thread_ts):
         try:
-            if coordinator is not None:
-                _, response = coordinator.process(
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
-                    text=text,
-                    thread_context=thread_context,
-                    agent=agent,
-                    on_progress=on_progress,
-                )
-            else:
-                response = None
-                if execution_workflow is not None:
-                    response = execution_workflow.process(
-                        channel_id=channel_id,
-                        thread_ts=thread_ts,
-                        text=text,
-                        thread_context=thread_context,
-                        agent=agent,
-                        defer_missing_confirmation=True,
-                    )
-                if linear_workflow is not None:
-                    response = response or linear_workflow.process(
-                        channel_id=channel_id,
-                        thread_ts=thread_ts,
-                        text=text,
-                        thread_context=thread_context,
-                        agent=agent,
-                    )
-                if artifact_workflow is not None:
-                    response = response or artifact_workflow.process(
-                        channel_id=channel_id,
-                        thread_ts=thread_ts,
-                        text=text,
-                        thread_context=thread_context,
-                        agent=agent,
-                    )
-                if response is None:
-                    response = dispatch_command(
-                        channel_id,
-                        thread_ts,
-                        text,
-                        thread_context=thread_context,
-                        agent=agent,
-                    )
-                else:
-                    thread_context.append(channel_id, thread_ts, text)
-                    thread_context.append(channel_id, thread_ts, response)
+            _, response = coordinator.process(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                text=text,
+                thread_context=thread_context,
+                agent=agent,
+                on_progress=on_progress,
+            )
         except Exception:
             if run_store is not None:
                 run_store.fail(channel_id=channel_id, thread_ts=thread_ts)
@@ -155,7 +107,6 @@ def build_slack_app(settings: Settings) -> App:
 
     return App(
         token=settings.slack_bot_token,
-        signing_secret=settings.slack_signing_secret,
         token_verification_enabled=False,
     )
 
@@ -173,7 +124,6 @@ def start_socket_mode(
 
     slack_app = build_slack_app(settings)
     run_store = ThreadRunStore()
-    artifact_workflow = ArtifactGenerationWorkflow()
     linear_workflow = LinearIntegrationWorkflow(settings=settings)
     execution_workflow = build_execution_workflow(settings)
     thread_summary_workflow = (
@@ -186,7 +136,6 @@ def start_socket_mode(
     coordinator = RequestCoordinator(
         router=RequestRouter(intent_classifier=build_intent_classifier(agent)),
         execution_workflow=execution_workflow,
-        artifact_workflow=artifact_workflow,
         linear_workflow=linear_workflow,
         thread_summary_workflow=thread_summary_workflow,
     )
@@ -201,9 +150,6 @@ def start_socket_mode(
             thread_context=thread_context,
             agent=agent,
             run_store=run_store,
-            artifact_workflow=artifact_workflow,
-            execution_workflow=execution_workflow,
-            linear_workflow=linear_workflow,
             coordinator=coordinator,
             client=client,
         )

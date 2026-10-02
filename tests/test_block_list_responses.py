@@ -74,12 +74,3 @@ def test_intent_classifier_reads_block_list_answer() -> None:
     assert classifier.classify("이거 진행해", None) is RequestIntent.CODE_WORK
 
 
-def test_artifact_draft_parses_from_block_list(tmp_path: Path) -> None:
-    payload = json.dumps({"kind": "text", "content": "본문"})
-    agent = LangChainAnalysisAgent(
-        chat_model=_BlockListModel(payload), project_resolver=ProjectResolver(root=tmp_path)
-    )
-
-    draft = agent.create_artifact_draft("맥락", tmp_path / "out.md")
-
-    assert draft.content == "본문"

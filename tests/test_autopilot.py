@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings
 from src.execution_workflow import (
     CommandResult,
@@ -343,7 +342,6 @@ def test_coordinator_forwards_progress_to_code_work_workflow(tmp_path: Path) -> 
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     progress: list[str] = []

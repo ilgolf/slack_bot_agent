@@ -24,7 +24,7 @@ from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from src.agent import AnalysisAgentError, PlanResponseFormatError
 from src.code_work_markers import (
@@ -59,8 +59,6 @@ from src.request_router import RequestIntent, RequestRouter
 from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
 from src.thread_workspace import ThreadWorkspaces, WorkspaceError
-from src.tool_policy import ToolCategory
-from src.tool_registry import ToolRegistry, definition
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +88,6 @@ _EXECUTION_MARKERS = (
 _ALLOWED_VERIFICATIONS = ("run_tests", "run_lint", "run_typecheck")
 DEFAULT_MAX_AUTO_REPAIRS = 2
 DEFAULT_MAX_AUTOPILOT_ITEMS = 20
-_GREP_IGNORED_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__"})
 
 
 class ExecutionRisk(StrEnum):
@@ -287,25 +284,6 @@ class ExistingFile:
     content: str | None
 
 
-class ExecutionPlanCreator(Protocol):
-    def create_execution_plan(
-        self,
-        request: str,
-        context: ProjectContext,
-        skills: list[AppliedSkill],
-        existing_files: list[ExistingFile],
-    ) -> ExecutionPlan: ...
-
-
-class RepairPlanCreator(Protocol):
-    def create_repair_steps(
-        self,
-        plan: ExecutionPlan,
-        existing_files: list[ExistingFile],
-        checks: list[CommandResult],
-    ) -> list[ExecutionStep]: ...
-
-
 class PendingPlanStatus(StrEnum):
     MISSING = "missing"
     READY = "ready"
@@ -484,49 +462,6 @@ class ProjectExecutionTools:
     def read_file(self, relative_path: str) -> str:
         return _project_path(self.root, relative_path).read_text(encoding="utf-8")
 
-    def list_files(self, relative_path: str = ".") -> list[str]:
-        path = _project_path(self.root, relative_path, allow_root=True)
-        return sorted(item.name for item in path.iterdir())
-
-    def grep(self, query: str, relative_path: str = ".") -> list[str]:
-        if not query or len(query) > 200:
-            raise ValueError("검색어가 올바르지 않습니다")
-        directory = _project_path(self.root, relative_path, allow_root=True)
-        if not directory.is_dir():
-            raise ValueError("검색 경로가 디렉터리가 아닙니다")
-        matches: list[str] = []
-        for path in directory.rglob("*"):
-            if len(matches) >= 100:
-                break
-            if path.is_symlink() or not path.is_file():
-                continue
-            relative_parts = path.relative_to(self.root).parts
-            if _GREP_IGNORED_DIRS.intersection(relative_parts):
-                continue
-            try:
-                if query in path.read_text(encoding="utf-8"):
-                    matches.append(str(path.relative_to(self.root)))
-            except (OSError, UnicodeDecodeError):
-                continue
-        return matches
-
-    def git_status(self) -> list[str]:
-        return _read_git_state(self.root).changed_files
-
-    def git_diff(self, relative_path: str | None = None) -> str:
-        command = ["git", "-C", str(self.root), "diff", "--"]
-        if relative_path is not None:
-            _project_path(self.root, relative_path)
-            command.append(relative_path)
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        return (completed.stdout + completed.stderr)[-32_000:]
-
     def write_file(self, relative_path: str, content: str) -> tuple[str, str]:
         if relative_path not in self.allowed_paths:
             raise ValueError(f"계획에 포함되지 않은 파일입니다: {relative_path}")
@@ -566,33 +501,6 @@ class ProjectExecutionTools:
             success=success,
             output=output[-2000:],
             status=VerificationStatus.SUCCEEDED if success else VerificationStatus.FAILED,
-        )
-
-    def tool_registry(self) -> ToolRegistry:
-        """Expose the same bounded primitives to a future iterative planner.
-
-        This prevents a second, weaker path-validation implementation from
-        being introduced for tool calling.
-        """
-        return ToolRegistry(
-            [
-                definition("list_files", ToolCategory.PROJECT_READ, self.list_files),
-                definition(
-                    "read_file",
-                    ToolCategory.PROJECT_READ,
-                    self.read_file,
-                    evidence_arg="relative_path",
-                ),
-                definition("grep", ToolCategory.PROJECT_SEARCH, self.grep),
-                definition("git_status", ToolCategory.GIT_READ, self.git_status),
-                definition("git_diff", ToolCategory.GIT_READ, self.git_diff),
-                definition("write_file", ToolCategory.PROJECT_WRITE, self.write_file),
-                definition("run_tests", ToolCategory.VERIFY, lambda: self.run_check("run_tests")),
-                definition("run_lint", ToolCategory.VERIFY, lambda: self.run_check("run_lint")),
-                definition(
-                    "run_typecheck", ToolCategory.VERIFY, lambda: self.run_check("run_typecheck")
-                ),
-            ]
         )
 
 
@@ -742,25 +650,18 @@ class ExecutionWorkflow:
         text: str,
         thread_context: ThreadContextStore,
         agent: object,
-        defer_missing_confirmation: bool = False,
         trusted_code_work: bool = False,
         auto_execute: bool = False,
         on_progress: Callable[[str], None] | None = None,
     ) -> str | None:
         command_text = _SLACK_MENTION.sub("", text).strip()
         if _CONFIRMATION.fullmatch(command_text):
-            response = self._execute_pending(channel_id, thread_ts, agent)
-            if defer_missing_confirmation and response.startswith("실행할 보류 계획이 없습니다"):
-                return None
-            return response
+            return self._execute_pending(channel_id, thread_ts, agent)
         if _CANCELLATION.fullmatch(command_text):
             if (channel_id, thread_ts) in self._autopilot_active:
                 self._autopilot_cancelled.add((channel_id, thread_ts))
                 return "⛔ 자동 진행 취소를 요청했습니다. 현재 항목이 끝나면 중단합니다."
-            cancellation_response = self._cancel_pending(channel_id, thread_ts)
-            if defer_missing_confirmation and cancellation_response is None:
-                return None
-            return cancellation_response
+            return self._cancel_pending(channel_id, thread_ts)
         if _DISCARD.fullmatch(command_text):
             return self._discard(channel_id, thread_ts)
         if RequestRouter().route(command_text).intent in {
