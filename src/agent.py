@@ -112,6 +112,9 @@ def get_agent(
             project_resolver=project_resolver,
             timeout_seconds=settings.agent_runner_timeout_seconds,
             max_turns=settings.agent_runner_max_turns,
+            edit_timeout_seconds=settings.agent_edit_timeout_seconds,
+            edit_max_turns=settings.agent_edit_max_turns,
+            edit_max_budget_usd=settings.agent_edit_max_budget_usd,
         )
 
     raise ValueError(f"unknown LLM provider: {provider!r}")

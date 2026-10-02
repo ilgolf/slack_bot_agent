@@ -132,3 +132,23 @@ def test_get_agent_rejects_an_unknown_provider(
 
     with pytest.raises(ValueError, match="unknown LLM provider"):
         get_agent("nope", settings=Settings())
+
+
+def test_code_agent_receives_the_edit_limits_from_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(
+        agent_edit_timeout_seconds=111.0,
+        agent_edit_max_turns=22,
+        agent_edit_max_budget_usd=1.5,
+    )
+
+    agent = get_agent("claude_code", settings=settings)
+
+    assert isinstance(agent, CodeAgentAnalysisAgent)
+    assert (agent.edit_timeout_seconds, agent.edit_max_turns, agent.edit_max_budget_usd) == (
+        111.0,
+        22,
+        1.5,
+    )

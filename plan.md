@@ -75,9 +75,9 @@
 - [x] 계획 작성 요청("plan 짜줘")은 편집 모드에서도 `plan.md`만 쓰기 예외로 허용한다
 
 ### E. 코드 에이전트용 요청 분류기
-- [x] 러너의 `complete`로 요청을 `code_work`/`project_analysis`로 분류하고, `build_intent_classifier`가 `runner`를 가진 에이전트에도 이 분류기를 만들어 준다
-- [x] 러너 오류·타임아웃·알 수 없는 응답은 분석으로 분류하고 예외를 올리지 않는다
-- [x] 키워드 규칙에 걸린 요청은 분류기를 부르지 않는다 (호출 수 증가 없음)
+- [ ] 러너의 `complete`로 요청을 `code_work`/`project_analysis`로 분류하고, `build_intent_classifier`가 `runner`를 가진 에이전트에도 이 분류기를 만들어 준다
+- [ ] 러너 오류·타임아웃·알 수 없는 응답은 분석으로 분류하고 예외를 올리지 않는다
+- [ ] 키워드 규칙에 걸린 요청은 분류기를 부르지 않는다 (호출 수 증가 없음)
 
 ### F. 설정
 - [x] `CODE_WORK_MODE`(기본 `plan`, 잘못된 값은 오류), `AGENT_EDIT_TIMEOUT_SECONDS`·`AGENT_EDIT_MAX_TURNS`·`AGENT_EDIT_MAX_BUDGET_USD` 기본값과 환경변수 읽기
