@@ -60,16 +60,18 @@ class FakeRunner:
         return RunnerResult(text=self.output, files_read=self.files_read)
 
 
-def test_analyze_asks_for_project_name_without_calling_runner_when_project_unidentified(
+def test_analyze_answers_a_general_question_without_a_project_or_source_evidence(
     tmp_path: Path,
 ) -> None:
-    runner = FakeRunner()
+    runner = FakeRunner(complete_output="Linear 이슈 생성은 `이슈 생성 …` 으로 가능합니다.")
     agent = CodeAgentAnalysisAgent(runner=runner, project_resolver=ProjectResolver(root=tmp_path))
 
-    result = agent.analyze("이 프로젝트는 뭐 하는 거야?")
+    result = agent.analyze("thread 내용 기반으로 정리해서 ticket을 만들 수 있는 상황임?")
 
-    assert result.summary == "분석할 프로젝트명을 알려주세요."
+    assert result.summary == "Linear 이슈 생성은 `이슈 생성 …` 으로 가능합니다."
+    assert result.limitations == []
     assert runner.calls == []
+    assert len(runner.complete_calls) == 1
 
 
 def test_analyze_runs_runner_once_in_the_project_directory(tmp_path: Path) -> None:

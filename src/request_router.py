@@ -7,11 +7,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from src.code_work_markers import CODE_INTEGRATION_MARKERS as _CODE_INTEGRATION_MARKERS
-from src.code_work_markers import CODE_MARKERS as _CODE_MARKERS
-from src.code_work_markers import CODE_PLANNING_MARKERS as _CODE_PLANNING_MARKERS
-from src.code_work_markers import PLAN_CONTINUATION_MARKERS as _PLAN_CONTINUATION_MARKERS
-from src.code_work_markers import is_plan_follow_work_request
 from src.thread_context import ThreadWorkContext
 
 
@@ -23,7 +18,6 @@ class RequestIntent(StrEnum):
     LINEAR_MUTATION = "linear_mutation"
     PROJECT_ANALYSIS = "project_analysis"
     THREAD_SUMMARY = "thread_summary"
-    SYSTEM_INQUIRY = "system_inquiry"
     AMBIGUOUS = "ambiguous"
 
 
@@ -54,12 +48,6 @@ _LINEAR_READ = (
     "티켓 조회",
     "티켓 목록",
 )
-_SYSTEM_MARKERS = ("mcp 연동", "mcp 연결", "mcp 가능한", "mcp 지원")
-_PROJECT_CODE_CONTEXT = (
-    "project", "프로젝트", "코드", "src/", "tests/", ".py", "pytest", "test",
-    "plan.md", "개발", "구현", "연동 작업",
-)
-_INQUIRY_MARKERS = ("?", "？", "기반", "학습", "설계한", "설계됐", "지원", "가능")
 
 
 class IntentClassifier(Protocol):
@@ -99,58 +87,21 @@ class RequestRouter:
         if _DISCARD.fullmatch(command):
             return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
 
-        if (
-            _is_thread_summary_line(command_line)
-            and not any(marker in command_line for marker in _FEATURE_QUESTION_MARKERS)
+        if _is_thread_summary_line(command_line) and not any(
+            marker in command_line for marker in _FEATURE_QUESTION_MARKERS
         ):
             return RoutedRequest(RequestIntent.THREAD_SUMMARY, command, project_name)
 
-        # The first line carries the command; later lines can be ticket fields
-        # whose title or description happen to contain code-work vocabulary.
-        if _starts_with_linear_command(command_line, _LINEAR_CREATE + _LINEAR_UPDATE):
-            if any(marker in command_line for marker in ("가능", "지원", "어떻게")):
-                return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
-            return RoutedRequest(RequestIntent.LINEAR_MUTATION, command, project_name)
-        if _starts_with_linear_command(command_line, _LINEAR_READ):
-            return RoutedRequest(RequestIntent.LINEAR_READ, command, project_name)
-        if (
-            "linear" in command_line
-            and any(marker in command_line for marker in _PROJECT_CODE_CONTEXT)
-            and any(marker in command_line for marker in _CODE_MARKERS + _CODE_PLANNING_MARKERS)
-            and not any(marker in command_line for marker in ("가능", "지원", "학습", "기반"))
-        ):
-            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
-        if ("linear" in command_line or "graphql" in command_line) and any(
-            marker in command_line for marker in _INQUIRY_MARKERS
-        ):
-            return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
-        if is_plan_follow_work_request(command_line):
-            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
-        if any(marker in command_line for marker in _CODE_INTEGRATION_MARKERS) or (
-            "linear" in command_line
-            and any(marker in command_line for marker in _PROJECT_CODE_CONTEXT)
-        ):
-            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
-        if any(
-            marker in normalized
-            for marker in _CODE_MARKERS + _CODE_PLANNING_MARKERS + _CODE_INTEGRATION_MARKERS
-        ):
-            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
-        if "linear" in normalized:
-            return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
-        if any(marker in normalized for marker in _SYSTEM_MARKERS):
-            return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
-        if (
-            thread_context is not None
-            and (thread_context.has_pending_plan or thread_context.last_intent_was_code_work)
-            and any(marker in normalized for marker in _PLAN_CONTINUATION_MARKERS)
-            and (
-                project_name is None
-                or thread_context.project_name is None
-                or project_name == thread_context.project_name
-            )
-        ):
-            return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
+        # Fixed Linear commands only: the first line carries the command; later lines
+        # are ticket fields whose text may hold any vocabulary.
+        if not any(marker in command_line for marker in _FEATURE_QUESTION_MARKERS):
+            if _starts_with_linear_command(command_line, _LINEAR_CREATE + _LINEAR_UPDATE):
+                return RoutedRequest(RequestIntent.LINEAR_MUTATION, command, project_name)
+            if _starts_with_linear_command(command_line, _LINEAR_READ):
+                return RoutedRequest(RequestIntent.LINEAR_READ, command, project_name)
+
+        # Everything else is the classifier's call; no classifier, an error or an unsure
+        # answer is a read-only answer.
         if self._classified_as_code_work(command, thread_context):
             return RoutedRequest(
                 RequestIntent.CODE_WORK, command, project_name, llm_classified=True

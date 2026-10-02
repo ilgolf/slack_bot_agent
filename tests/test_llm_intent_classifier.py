@@ -154,13 +154,13 @@ class _CountingClassifier:
         return self.intent
 
 
-def test_the_router_asks_the_classifier_only_for_requests_its_keywords_do_not_settle() -> None:
+def test_the_router_asks_the_classifier_for_every_message_that_is_not_a_fixed_command() -> None:
     classifier = _CountingClassifier(RequestIntent.CODE_WORK)
     router = RequestRouter(intent_classifier=classifier)
 
-    settled = router.route("src/calc.py에 subtract 함수를 추가해줘")
-    assert (settled.intent, classifier.calls) == (RequestIntent.CODE_WORK, 0)
+    fixed = router.route("실행")
+    assert (fixed.intent, classifier.calls) == (RequestIntent.CONTROL_CONFIRM, 0)
 
-    unsettled = router.route("README를 읽고 개선해줘")
-    assert (unsettled.intent, classifier.calls) == (RequestIntent.CODE_WORK, 1)
-    assert unsettled.llm_classified is True
+    classified = router.route("src/calc.py에 subtract 함수를 추가해줘")
+    assert (classified.intent, classifier.calls) == (RequestIntent.CODE_WORK, 1)
+    assert classified.llm_classified is True
