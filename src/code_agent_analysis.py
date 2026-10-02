@@ -14,6 +14,20 @@ from typing import Protocol
 
 from src.agent import AnalysisAgentError, AnalysisResult, insufficient_evidence_result
 from src.agent_trace import AgentTraceRecorder, ThreadTraceStore
+from src.code_plan_prompts import (
+    build_code_plan_prompt,
+    build_repair_prompt,
+    parse_plan_response,
+    parse_repair_response,
+)
+from src.execution_workflow import (
+    AppliedSkill,
+    CommandResult,
+    ExecutionPlan,
+    ExecutionStep,
+    ExistingFile,
+    ProjectContext,
+)
 from src.project_resolver import ProjectResolver
 from src.request_classifier import AnalysisRequest, RequestKind, classify_request
 
@@ -50,6 +64,8 @@ class AgentRunner(Protocol):
     def run(
         self, prompt: str, *, cwd: Path, timeout_seconds: float, max_turns: int
     ) -> RunnerResult: ...
+
+    def complete(self, prompt: str, *, timeout_seconds: float) -> str: ...
 
 
 class CodeAgentAnalysisAgent:
@@ -106,6 +122,71 @@ class CodeAgentAnalysisAgent:
                 started_at=started_at,
             )
         return result
+
+    def create_execution_plan(
+        self,
+        request: str,
+        context: ProjectContext,
+        skills: list[AppliedSkill],
+        existing_files: list[ExistingFile],
+        *,
+        channel_id: str = "-",
+        thread_ts: str = "-",
+    ) -> ExecutionPlan:
+        """Text-only: the runner gets no tools, so it can only propose a plan."""
+        prompt = build_code_plan_prompt(request, context, skills, existing_files)
+        text = self._complete("plan", prompt, context.project_name, channel_id, thread_ts)
+        return parse_plan_response(text)
+
+    def create_repair_steps(
+        self,
+        plan: ExecutionPlan,
+        existing_files: list[ExistingFile],
+        checks: list[CommandResult],
+        *,
+        channel_id: str = "-",
+        thread_ts: str = "-",
+    ) -> list[ExecutionStep]:
+        prompt = build_repair_prompt(plan, existing_files, checks)
+        text = self._complete("repair", prompt, plan.project_name, channel_id, thread_ts)
+        return parse_repair_response(text)
+
+    def _complete(
+        self, phase: str, prompt: str, project_name: str, channel_id: str, thread_ts: str
+    ) -> str:
+        """One text-only runner call. Runner failures never surface their message;
+        the trace step carries only the runner name and outcome."""
+        trace = self._trace_for(channel_id, thread_ts, project_name)
+        started_at = monotonic()
+        outcome = "error"
+        try:
+            text = self.runner.complete(prompt, timeout_seconds=self.timeout_seconds)
+            outcome = "ok"
+            return text
+        except RunnerTimeout:
+            outcome = "timeout"
+            raise AnalysisAgentError("코드 에이전트 응답 시간이 초과되었습니다.") from None
+        except RunnerError:
+            raise AnalysisAgentError("코드 에이전트 실행에 실패했습니다.") from None
+        finally:
+            trace.record_tool(
+                phase=phase,
+                tool_name=self.runner.name,
+                category="project_read",
+                outcome=outcome,
+                started_at=started_at,
+            )
+
+    def _trace_for(self, channel_id: str, thread_ts: str, project_name: str) -> AgentTraceRecorder:
+        trace = self.thread_trace_store.get(channel_id, thread_ts)
+        if trace is None:
+            trace = AgentTraceRecorder(
+                request_id=uuid.uuid4().hex[:12],
+                intent="code_plan",
+                selected_project=project_name,
+            )
+            self.thread_trace_store.put(channel_id, thread_ts, trace)
+        return trace
 
     def _analyze_project(self, request: AnalysisRequest, project_path: Path) -> AnalysisResult:
         result = self._run(_PROMPT_TEMPLATE.format(question=request.question), project_path)

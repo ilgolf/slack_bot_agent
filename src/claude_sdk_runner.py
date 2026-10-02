@@ -14,6 +14,10 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKError,
+    HookContext,
+    HookInput,
+    HookJSONOutput,
+    HookMatcher,
     Message,
     ResultMessage,
     ToolUseBlock,
@@ -21,6 +25,7 @@ from claude_agent_sdk import (
 )
 
 from src.code_agent_analysis import RunnerError, RunnerResult, RunnerTimeout
+from src.read_path_guard import is_allowed_read
 
 _READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
 
@@ -78,6 +83,23 @@ class ClaudeSdkRunner:
 def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
     """`tools` removes every other built-in tool from the model's context; the same
     list in `allowed_tools` only pre-approves these so no prompt blocks a headless run."""
+    project_root = Path(cwd)
+
+    async def guard(
+        hook_input: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        if hook_input["hook_event_name"] != "PreToolUse":
+            return {}
+        if is_allowed_read(project_root, hook_input["tool_name"], hook_input["tool_input"]):
+            return {}
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "프로젝트 밖 경로는 읽을 수 없습니다.",
+            }
+        }
+
     return ClaudeAgentOptions(
         tools=list(_READ_ONLY_TOOLS),
         allowed_tools=list(_READ_ONLY_TOOLS),
@@ -86,6 +108,7 @@ def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
         # `[]` is SDK isolation mode: no `~/.claude` settings, hooks or CLAUDE.md leak in.
         setting_sources=[],
         permission_mode="dontAsk",
+        hooks={"PreToolUse": [HookMatcher(matcher="|".join(_READ_ONLY_TOOLS), hooks=[guard])]},
     )
 
 
