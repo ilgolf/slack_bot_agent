@@ -694,25 +694,18 @@ class ExecutionWorkflow:
         text: str,
         thread_context: ThreadContextStore,
         agent: object,
-        defer_missing_confirmation: bool = False,
         trusted_code_work: bool = False,
         auto_execute: bool = False,
         on_progress: Callable[[str], None] | None = None,
     ) -> str | None:
         command_text = _SLACK_MENTION.sub("", text).strip()
         if _CONFIRMATION.fullmatch(command_text):
-            response = self._execute_pending(channel_id, thread_ts, agent)
-            if defer_missing_confirmation and response.startswith("실행할 보류 계획이 없습니다"):
-                return None
-            return response
+            return self._execute_pending(channel_id, thread_ts, agent)
         if _CANCELLATION.fullmatch(command_text):
             if (channel_id, thread_ts) in self._autopilot_active:
                 self._autopilot_cancelled.add((channel_id, thread_ts))
                 return "⛔ 자동 진행 취소를 요청했습니다. 현재 항목이 끝나면 중단합니다."
-            cancellation_response = self._cancel_pending(channel_id, thread_ts)
-            if defer_missing_confirmation and cancellation_response is None:
-                return None
-            return cancellation_response
+            return self._cancel_pending(channel_id, thread_ts)
         if _DISCARD.fullmatch(command_text):
             return self._discard(channel_id, thread_ts)
         if RequestRouter().route(command_text).intent in {

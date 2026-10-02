@@ -32,9 +32,9 @@
 - [x] `pyproject.toml`에서 import되지 않는 `structlog`·`langchain`(메타)을 뺀다. 모든 `src` 모듈을 import하는 스모크 테스트와 전체 테스트가 통과해야 한다 (`uv.lock` 갱신은 `uv`가 필요하다) — `uv`가 없어 `uv.lock`은 아직 갱신하지 못했다 (uv가 있는 곳에서 `uv lock` 필요)
 
 ### B. 레거시 `handle_app_mention` 분기 제거 (동작 변경 없음, structural)
-- [ ] `tests/test_handle_app_mention.py`가 `coordinator`를 쓰도록 먼저 옮기고 전체 테스트가 통과함을 확인한다 (운영과 같은 경로로 검증)
-- [ ] `handle_app_mention`의 `coordinator` 필수화와 `execution_workflow`·`linear_workflow`·`artifact_workflow` 인자·레거시 분기·`dispatch_command` import를 지운다
-- [ ] `ExecutionWorkflow.process`의 `defer_missing_confirmation` 인자와 그 분기를 지운다
+- [x] `tests/test_handle_app_mention.py`가 `coordinator`를 쓰도록 먼저 옮기고 전체 테스트가 통과함을 확인한다 (운영과 같은 경로로 검증)
+- [x] `handle_app_mention`의 `coordinator` 필수화와 `execution_workflow`·`linear_workflow`·`artifact_workflow` 인자·레거시 분기·`dispatch_command` import를 지운다
+- [x] `ExecutionWorkflow.process`의 `defer_missing_confirmation` 인자와 그 분기를 지운다
 
 ### C. 파일 생성 기능 제거 (동작 변경: 파일 생성 요청과 `저장`)
 - 결정: 파일 생성 요청은 더 이상 별도로 처리하지 않는다. 코드 작업 표시어가 있으면 코드 작업, 없으면 분류기·분석으로 간다.
