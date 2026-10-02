@@ -25,11 +25,11 @@
 ## 테스트 목록 (위에서부터 하나씩)
 
 ### A. 참조 없는 코드 제거 (동작 변경 없음, structural)
-- [ ] `ExecutionPlanCreator`·`RepairPlanCreator` 프로토콜을 지운다
-- [ ] `ProjectExecutionTools.tool_registry()`와 `tests/test_tool_registry.py`의 해당 테스트를 지운다 (`ToolRegistry`·`tool_policy` 자체는 LangChain 경로가 쓰므로 유지)
-- [ ] `ToolRegistry.as_langchain_tools`와 그 테스트를 지운다
-- [ ] 역할별 provider 설정(`analysis_plan_llm_provider`·`code_execution_llm_provider`·`LLMRoleProviders`·`Settings.llm_role_providers`)과 `tests/test_llm_provider_roles.py`를 지운다
-- [ ] `pyproject.toml`에서 import되지 않는 `structlog`·`langchain`(메타)을 뺀다. 모든 `src` 모듈을 import하는 스모크 테스트와 전체 테스트가 통과해야 한다 (`uv.lock` 갱신은 `uv`가 필요하다)
+- [x] `ExecutionPlanCreator`·`RepairPlanCreator` 프로토콜을 지운다
+- [x] `ProjectExecutionTools.tool_registry()`와 `tests/test_tool_registry.py`의 해당 테스트를 지운다 (`ToolRegistry`·`tool_policy` 자체는 LangChain 경로가 쓰므로 유지)
+- [x] `ToolRegistry.as_langchain_tools`와 그 테스트를 지운다
+- [x] 역할별 provider 설정(`analysis_plan_llm_provider`·`code_execution_llm_provider`·`LLMRoleProviders`·`Settings.llm_role_providers`)과 `tests/test_llm_provider_roles.py`를 지운다
+- [x] `pyproject.toml`에서 import되지 않는 `structlog`·`langchain`(메타)을 뺀다. 모든 `src` 모듈을 import하는 스모크 테스트와 전체 테스트가 통과해야 한다 (`uv.lock` 갱신은 `uv`가 필요하다) — `uv`가 없어 `uv.lock`은 아직 갱신하지 못했다 (uv가 있는 곳에서 `uv lock` 필요)
 
 ### B. 레거시 `handle_app_mention` 분기 제거 (동작 변경 없음, structural)
 - [ ] `tests/test_handle_app_mention.py`가 `coordinator`를 쓰도록 먼저 옮기고 전체 테스트가 통과함을 확인한다 (운영과 같은 경로로 검증)
