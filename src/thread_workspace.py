@@ -14,7 +14,16 @@ from pathlib import Path
 
 GitRunner = Callable[[list[str]], str]
 
-_ALLOWED_SUBCOMMANDS = {"rev-parse", "status", "worktree", "branch", "add", "commit", "diff"}
+_ALLOWED_SUBCOMMANDS = {
+    "rev-parse",
+    "status",
+    "worktree",
+    "branch",
+    "add",
+    "commit",
+    "diff",
+    "show",
+}
 _ALLOWED_WORKTREE_ACTIONS = {"add", "remove", "list", "prune"}
 BOT_BRANCH_PREFIX = "bot/"
 _HOOKS_OFF = ("-c", "core.hooksPath=/dev/null")
@@ -57,6 +66,8 @@ def _check_allowed(args: Sequence[str]) -> None:
         raise ValueError(f"허용되지 않은 git 명령입니다: {subcommand}")
     if subcommand == "worktree" and (len(args) < 2 or args[1] not in _ALLOWED_WORKTREE_ACTIONS):
         raise ValueError("허용되지 않은 git worktree 동작입니다")
+    if subcommand == "show" and not (len(args) == 2 and args[1].startswith("HEAD:")):
+        raise ValueError("HEAD의 파일 내용만 읽을 수 있습니다")
     if subcommand == "branch" and not (
         len(args) == 3 and args[1] == "-D" and args[2].startswith(BOT_BRANCH_PREFIX)
     ):
