@@ -7,7 +7,6 @@ can run side by side with v1 during migration — see plan.md's design summary.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -18,11 +17,10 @@ from src.agent import AnalysisAgent
 from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings
 from src.dispatch import dispatch_command
-from src.execution_workflow import ExecutionWorkflow, SkillRegistry
+from src.execution_workflow import ExecutionWorkflow
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.llm_intent_classifier import build_intent_classifier
 from src.observability import request_log_context
-from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
 from src.request_router import RequestIntent, RequestRouter
 from src.run_state import ThreadRunStore
@@ -30,7 +28,7 @@ from src.slack_thread import SlackThreadReader
 from src.thread_context import ThreadContextStore
 from src.thread_summarizer import ThreadSummarizer
 from src.thread_summary_workflow import ThreadSummaryWorkflow
-from src.thread_workspace import ThreadWorkspaces
+from src.workflow_factory import build_execution_workflow
 
 
 class SlackConfigError(RuntimeError):
@@ -177,11 +175,7 @@ def start_socket_mode(
     run_store = ThreadRunStore()
     artifact_workflow = ArtifactGenerationWorkflow()
     linear_workflow = LinearIntegrationWorkflow(settings=settings)
-    execution_workflow = ExecutionWorkflow(
-        project_resolver=ProjectResolver(root=Path(settings.projects_root).expanduser()),
-        skill_registry=SkillRegistry({"codex": "~/.codex/skills"}),
-        workspaces=ThreadWorkspaces(Path(settings.worktrees_root).expanduser()),
-    )
+    execution_workflow = build_execution_workflow(settings)
     thread_summary_workflow = (
         ThreadSummaryWorkflow(
             reader=SlackThreadReader(slack_app.client), summarizer=thread_summarizer

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from langchain_core.messages import HumanMessage
 
 from src.langchain_agent import ChatModel
@@ -28,6 +30,32 @@ class LlmIntentClassifier:
         return RequestIntent.PROJECT_ANALYSIS
 
 
+_CLASSIFY_TIMEOUT_SECONDS = 60.0
+_LABEL_NOISE = " \t\r\n`'\"."
+
+
+class TextRunner(Protocol):
+    def complete(self, prompt: str, *, timeout_seconds: float) -> str: ...
+
+
+class RunnerIntentClassifier:
+    """The same question put to a code agent's text-only runner (no tools). Anything but a
+    clear `code_work` answer, including a runner failure, is treated as project analysis."""
+
+    def __init__(self, runner: TextRunner) -> None:
+        self._runner = runner
+
+    def classify(self, text: str, thread_context: ThreadWorkContext | None) -> RequestIntent:
+        prompt = _PROMPT + text + _thread_state_note(thread_context)
+        try:
+            answer = self._runner.complete(prompt, timeout_seconds=_CLASSIFY_TIMEOUT_SECONDS)
+        except Exception:
+            return RequestIntent.PROJECT_ANALYSIS
+        if answer.strip(_LABEL_NOISE).casefold() == RequestIntent.CODE_WORK:
+            return RequestIntent.CODE_WORK
+        return RequestIntent.PROJECT_ANALYSIS
+
+
 def _thread_state_note(thread_context: ThreadWorkContext | None) -> str:
     if thread_context is None:
         return ""
@@ -39,6 +67,12 @@ def _thread_state_note(thread_context: ThreadWorkContext | None) -> str:
 
 
 def build_intent_classifier(agent: object) -> IntentClassifier | None:
-    """Reuse the analysis agent's chat model; agents without one (the fake) get none."""
+    """Reuse the analysis agent's chat model, or a code agent's text-only runner; agents
+    with neither (the fake) get none."""
     chat_model = getattr(agent, "chat_model", None)
-    return LlmIntentClassifier(chat_model) if chat_model is not None else None
+    if chat_model is not None:
+        return LlmIntentClassifier(chat_model)
+    runner = getattr(agent, "runner", None)
+    if callable(getattr(runner, "complete", None)):
+        return RunnerIntentClassifier(runner)  # type: ignore[arg-type]
+    return None

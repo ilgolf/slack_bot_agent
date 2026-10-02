@@ -14,7 +14,16 @@ from pathlib import Path
 
 GitRunner = Callable[[list[str]], str]
 
-_ALLOWED_SUBCOMMANDS = {"rev-parse", "status", "worktree", "branch", "add", "commit", "diff"}
+_ALLOWED_SUBCOMMANDS = {
+    "rev-parse",
+    "status",
+    "worktree",
+    "branch",
+    "add",
+    "commit",
+    "diff",
+    "show",
+}
 _ALLOWED_WORKTREE_ACTIONS = {"add", "remove", "list", "prune"}
 BOT_BRANCH_PREFIX = "bot/"
 _HOOKS_OFF = ("-c", "core.hooksPath=/dev/null")
@@ -57,6 +66,8 @@ def _check_allowed(args: Sequence[str]) -> None:
         raise ValueError(f"허용되지 않은 git 명령입니다: {subcommand}")
     if subcommand == "worktree" and (len(args) < 2 or args[1] not in _ALLOWED_WORKTREE_ACTIONS):
         raise ValueError("허용되지 않은 git worktree 동작입니다")
+    if subcommand == "show" and not (len(args) == 2 and args[1].startswith("HEAD:")):
+        raise ValueError("HEAD의 파일 내용만 읽을 수 있습니다")
     if subcommand == "branch" and not (
         len(args) == 3 and args[1] == "-D" and args[2].startswith(BOT_BRANCH_PREFIX)
     ):
@@ -99,6 +110,10 @@ class ThreadWorkspaces:
     def branch_name(self, channel_id: str, thread_ts: str) -> str:
         return BOT_BRANCH_PREFIX + thread_key(channel_id, thread_ts)
 
+    @property
+    def git(self) -> GitCommands:
+        return self._git
+
     def worktree_path(self, project_name: str, channel_id: str, thread_ts: str) -> Path:
         return self._root / (_safe(project_name) or "project") / thread_key(channel_id, thread_ts)
 
@@ -124,12 +139,16 @@ class ThreadWorkspaces:
             raise WorkspaceError("작업용 worktree를 만들지 못했습니다.") from None
         return path
 
-    def check_clean(self, project_root: Path, paths: list[str]) -> None:
+    def dirty_files(self, project_root: Path, paths: list[str]) -> list[str]:
+        """Which of `paths` have uncommitted changes (or are untracked) in the checkout."""
         try:
             status = self._git(project_root, "status", "--porcelain", "--", *paths)
         except RuntimeError:
             raise WorkspaceError("원본 체크아웃의 상태를 확인하지 못했습니다.") from None
-        dirty = [line[3:] for line in status.splitlines() if line.strip()]
+        return [line[3:] for line in status.splitlines() if line.strip()]
+
+    def check_clean(self, project_root: Path, paths: list[str]) -> None:
+        dirty = self.dirty_files(project_root, paths)
         if dirty:
             raise UncommittedChanges(dirty)
 

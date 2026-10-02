@@ -31,6 +31,10 @@ class RecordingRunner:
         ("-c", "core.hooksPath=/tmp/evil", "status"),
         ("worktree", "move", "a", "b"),
         ("branch", "--list"),
+        ("show", "--stat"),
+        ("show", "HEAD"),
+        ("show", "main:a.txt"),
+        ("show", "HEAD:a.txt", "extra"),
     ],
 )
 def test_git_commands_outside_the_allowlist_are_rejected_without_running(
@@ -77,6 +81,14 @@ def test_default_runner_uses_an_argument_list_without_a_shell(
     assert isinstance(kwargs, dict)
     assert not kwargs.get("shell")
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_show_is_limited_to_reading_one_file_at_head() -> None:
+    runner = RecordingRunner()
+
+    GitCommands(runner)(Path("/repo"), "show", "HEAD:src/a.py")
+
+    assert runner.calls[0][-2:] == ["show", "HEAD:src/a.py"]
 
 
 def test_branch_delete_is_limited_to_bot_branches() -> None:

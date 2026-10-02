@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -25,9 +25,11 @@ from claude_agent_sdk import (
 )
 
 from src.code_agent_analysis import RunnerError, RunnerResult, RunnerTimeout
+from src.edit_guard import is_allowed_tool_call
 from src.read_path_guard import is_allowed_read
 
 _READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
+_EDIT_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit"]
 
 QueryFn = Callable[[str, ClaudeAgentOptions], AsyncIterator[Message]]
 
@@ -51,6 +53,21 @@ class ClaudeSdkRunner:
         return self._execute(
             prompt, read_only_options(cwd=cwd, max_turns=max_turns), timeout_seconds
         )
+
+    def edit(
+        self,
+        prompt: str,
+        *,
+        cwd: Path,
+        timeout_seconds: float,
+        max_turns: int,
+        max_budget_usd: float,
+        named_paths: frozenset[str] = frozenset(),
+    ) -> RunnerResult:
+        options = edit_options(
+            cwd=cwd, max_turns=max_turns, max_budget_usd=max_budget_usd, named_paths=named_paths
+        )
+        return self._execute(prompt, options, timeout_seconds)
 
     def complete(self, prompt: str, *, timeout_seconds: float) -> str:
         """Answer from the prompt alone: no tools, one turn, an empty scratch directory."""
@@ -80,26 +97,33 @@ class ClaudeSdkRunner:
         )
 
 
-def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
-    """`tools` removes every other built-in tool from the model's context; the same
-    list in `allowed_tools` only pre-approves these so no prompt blocks a headless run."""
-    project_root = Path(cwd)
+def _pre_tool_use_guard(
+    is_allowed: Callable[[str, Mapping[str, object]], bool], reason: str, tools: Sequence[str]
+) -> HookMatcher:
+    """One `PreToolUse` hook that denies every tool call `is_allowed` rejects."""
 
     async def guard(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
         if hook_input["hook_event_name"] != "PreToolUse":
             return {}
-        if is_allowed_read(project_root, hook_input["tool_name"], hook_input["tool_input"]):
+        if is_allowed(hook_input["tool_name"], hook_input["tool_input"]):
             return {}
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": "프로젝트 밖 경로는 읽을 수 없습니다.",
+                "permissionDecisionReason": reason,
             }
         }
 
+    return HookMatcher(matcher="|".join(tools), hooks=[guard])
+
+
+def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
+    """`tools` removes every other built-in tool from the model's context; the same
+    list in `allowed_tools` only pre-approves these so no prompt blocks a headless run."""
+    project_root = Path(cwd)
     return ClaudeAgentOptions(
         tools=list(_READ_ONLY_TOOLS),
         allowed_tools=list(_READ_ONLY_TOOLS),
@@ -108,7 +132,47 @@ def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
         # `[]` is SDK isolation mode: no `~/.claude` settings, hooks or CLAUDE.md leak in.
         setting_sources=[],
         permission_mode="dontAsk",
-        hooks={"PreToolUse": [HookMatcher(matcher="|".join(_READ_ONLY_TOOLS), hooks=[guard])]},
+        hooks={
+            "PreToolUse": [
+                _pre_tool_use_guard(
+                    lambda tool, tool_input: is_allowed_read(project_root, tool, tool_input),
+                    "프로젝트 밖 경로는 읽을 수 없습니다.",
+                    _READ_ONLY_TOOLS,
+                )
+            ]
+        },
+    )
+
+
+def edit_options(
+    *,
+    cwd: Path,
+    max_turns: int,
+    max_budget_usd: float,
+    named_paths: frozenset[str] = frozenset(),
+) -> ClaudeAgentOptions:
+    """Edit mode: file tools only (no shell), every call judged by `edit_guard` before it
+    runs. `cwd` must be the thread worktree, never the original checkout."""
+    worktree = Path(cwd)
+    return ClaudeAgentOptions(
+        tools=list(_EDIT_TOOLS),
+        allowed_tools=list(_EDIT_TOOLS),
+        cwd=cwd,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+        setting_sources=[],
+        permission_mode="dontAsk",
+        hooks={
+            "PreToolUse": [
+                _pre_tool_use_guard(
+                    lambda tool, tool_input: is_allowed_tool_call(
+                        worktree, tool, tool_input, named_paths=named_paths
+                    ),
+                    "이 작업은 허용되지 않습니다.",
+                    _EDIT_TOOLS,
+                )
+            ]
+        },
     )
 
 

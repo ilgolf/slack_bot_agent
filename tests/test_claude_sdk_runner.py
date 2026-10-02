@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 
 import pytest
@@ -19,7 +19,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from src.claude_sdk_runner import ClaudeSdkRunner, files_read_from, read_only_options
+from src.claude_sdk_runner import ClaudeSdkRunner, edit_options, files_read_from, read_only_options
 from src.code_agent_analysis import RunnerError, RunnerTimeout
 
 _MUTATING_TOOLS = {"Edit", "Write", "Bash", "NotebookEdit"}
@@ -193,3 +193,108 @@ def test_options_deny_reads_outside_the_project_with_a_pre_tool_use_hook(tmp_pat
     assert decide("Read", {"file_path": str(tmp_path / "a.txt")}) == {}
     denied = decide("Read", {"file_path": "/etc/hosts"})
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
+
+
+# --- Phase 18, B: edit mode ----------------------------------------------------------
+
+_EDIT_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit"]
+
+
+def test_edit_options_expose_exactly_the_read_and_edit_tools_and_no_shell(tmp_path: Path) -> None:
+    options = edit_options(cwd=tmp_path, max_turns=40, max_budget_usd=3.0)
+
+    assert options.tools == _EDIT_TOOLS
+    assert options.allowed_tools == _EDIT_TOOLS
+    assert not {"Bash", "NotebookEdit", "WebFetch", "Task"} & set(options.tools or [])
+    assert options.permission_mode == "dontAsk"
+    assert options.setting_sources == []
+
+
+def _edit_decider(
+    tmp_path: Path, named: frozenset[str] = frozenset()
+) -> Callable[[str, Mapping[str, object]], dict[str, object]]:
+    options = edit_options(cwd=tmp_path, max_turns=1, max_budget_usd=1.0, named_paths=named)
+    matchers = (options.hooks or {}).get("PreToolUse", [])
+    assert [matcher.matcher for matcher in matchers] == ["Read|Grep|Glob|Write|Edit"]
+    hook = matchers[0].hooks[0]
+
+    def decide(tool_name: str, tool_input: Mapping[str, object]) -> dict[str, object]:
+        event = {"hook_event_name": "PreToolUse", "tool_name": tool_name, "tool_input": tool_input}
+        return asyncio.run(hook(event, "id", {"signal": None}))  # type: ignore[arg-type]
+
+    return decide
+
+
+def test_edit_hook_denies_writes_outside_and_allows_edits_inside_the_worktree(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a.py").write_text("old")
+    decide = _edit_decider(tmp_path)
+
+    inside = {"file_path": str(tmp_path / "a.py"), "old_string": "o", "new_string": "n"}
+    assert decide("Edit", inside) == {}
+    denied = decide("Write", {"file_path": "/etc/hosts", "content": "x"})
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
+    git_denied = decide("Write", {"file_path": ".git", "content": "x"})
+    assert git_denied["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
+    shell = decide("Bash", {"command": "echo hi"})
+    assert shell["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
+
+
+def test_edit_hook_lets_the_user_named_files_through(tmp_path: Path) -> None:
+    decide = _edit_decider(tmp_path, frozenset({"plan.md"}))
+
+    assert decide("Write", {"file_path": "plan.md", "content": "x"}) == {}
+    other = decide("Write", {"file_path": "pyproject.toml", "content": "x"})
+    assert other["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
+
+
+def test_edit_limits_come_from_the_arguments(tmp_path: Path) -> None:
+    seen: list[ClaudeAgentOptions] = []
+
+    async def fake_query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        seen.append(options)
+        yield _result_message("done")
+
+    result = ClaudeSdkRunner(query=fake_query).edit(
+        "고쳐", cwd=tmp_path, timeout_seconds=30.0, max_turns=40, max_budget_usd=2.5
+    )
+
+    assert result.text == "done"
+    assert (seen[0].cwd, seen[0].max_turns, seen[0].max_budget_usd) == (tmp_path, 40, 2.5)
+
+
+def test_edit_times_out_into_runner_timeout(tmp_path: Path) -> None:
+    async def slow_query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        await asyncio.sleep(5)
+        yield _result_message("late")
+
+    with pytest.raises(RunnerTimeout):
+        ClaudeSdkRunner(query=slow_query).edit(
+            "고쳐", cwd=tmp_path, timeout_seconds=0.05, max_turns=5, max_budget_usd=1.0
+        )
+
+
+def test_edit_hides_sdk_errors_and_treats_an_exhausted_budget_as_a_runner_error(
+    tmp_path: Path,
+) -> None:
+    async def failing_query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        raise ClaudeSDKError("auth failed: sk-secret-token")
+        yield  # pragma: no cover
+
+    async def over_budget(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        yield ResultMessage(
+            subtype="error_max_budget_usd",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=True,
+            num_turns=3,
+            session_id="s",
+        )
+
+    for query in (failing_query, over_budget):
+        with pytest.raises(RunnerError) as exc_info:
+            ClaudeSdkRunner(query=query).edit(
+                "고쳐", cwd=tmp_path, timeout_seconds=30.0, max_turns=5, max_budget_usd=1.0
+            )
+        assert "sk-secret-token" not in str(exc_info.value)
