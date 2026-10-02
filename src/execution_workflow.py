@@ -24,7 +24,7 @@ from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from src.agent import AnalysisAgentError, PlanResponseFormatError
 from src.code_work_markers import (
@@ -59,8 +59,6 @@ from src.request_router import RequestIntent, RequestRouter
 from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
 from src.thread_workspace import ThreadWorkspaces, WorkspaceError
-from src.tool_policy import ToolCategory
-from src.tool_registry import ToolRegistry, definition
 
 logger = logging.getLogger(__name__)
 
@@ -285,25 +283,6 @@ class ExistingFile:
 
     relative_path: str
     content: str | None
-
-
-class ExecutionPlanCreator(Protocol):
-    def create_execution_plan(
-        self,
-        request: str,
-        context: ProjectContext,
-        skills: list[AppliedSkill],
-        existing_files: list[ExistingFile],
-    ) -> ExecutionPlan: ...
-
-
-class RepairPlanCreator(Protocol):
-    def create_repair_steps(
-        self,
-        plan: ExecutionPlan,
-        existing_files: list[ExistingFile],
-        checks: list[CommandResult],
-    ) -> list[ExecutionStep]: ...
 
 
 class PendingPlanStatus(StrEnum):
@@ -566,33 +545,6 @@ class ProjectExecutionTools:
             success=success,
             output=output[-2000:],
             status=VerificationStatus.SUCCEEDED if success else VerificationStatus.FAILED,
-        )
-
-    def tool_registry(self) -> ToolRegistry:
-        """Expose the same bounded primitives to a future iterative planner.
-
-        This prevents a second, weaker path-validation implementation from
-        being introduced for tool calling.
-        """
-        return ToolRegistry(
-            [
-                definition("list_files", ToolCategory.PROJECT_READ, self.list_files),
-                definition(
-                    "read_file",
-                    ToolCategory.PROJECT_READ,
-                    self.read_file,
-                    evidence_arg="relative_path",
-                ),
-                definition("grep", ToolCategory.PROJECT_SEARCH, self.grep),
-                definition("git_status", ToolCategory.GIT_READ, self.git_status),
-                definition("git_diff", ToolCategory.GIT_READ, self.git_diff),
-                definition("write_file", ToolCategory.PROJECT_WRITE, self.write_file),
-                definition("run_tests", ToolCategory.VERIFY, lambda: self.run_check("run_tests")),
-                definition("run_lint", ToolCategory.VERIFY, lambda: self.run_check("run_lint")),
-                definition(
-                    "run_typecheck", ToolCategory.VERIFY, lambda: self.run_check("run_typecheck")
-                ),
-            ]
         )
 
 
