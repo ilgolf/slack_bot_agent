@@ -264,3 +264,8 @@ def test_non_thread_requests_keep_their_existing_intent(text: str) -> None:
 )
 def test_questions_about_thread_summary_are_not_executed_as_summaries(text: str) -> None:
     assert RequestRouter().route(text).intent is not RequestIntent.THREAD_SUMMARY
+
+
+@pytest.mark.parametrize("text", ["폐기", "폐기해줘", "<@U123> 폐기"])
+def test_discard_reply_is_routed_to_the_code_work_workflow(text: str) -> None:
+    assert RequestRouter().route(text).intent is RequestIntent.CODE_WORK

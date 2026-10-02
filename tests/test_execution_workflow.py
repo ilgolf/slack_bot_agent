@@ -34,6 +34,7 @@ from src.execution_workflow import (
 from src.project_resolver import ProjectResolver
 from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
+from src.thread_workspace import ThreadWorkspaces
 
 
 class PlanningAgent:
@@ -2952,3 +2953,212 @@ def test_code_agent_normal_flow_previews_confirms_writes_and_verifies(
     assert response is not None
     assert "✅ run_tests" in response
     assert (project / "README.md").read_text() == "after\n"
+
+
+# --- Phase 17: per-thread git worktree isolation ---------------------------------------
+
+_TEST_GIT = ("git", "-c", "user.name=Tester", "-c", "user.email=t@example.com")
+
+
+def _git(repo: Path, *args: str) -> str:
+    done = subprocess.run(
+        [*_TEST_GIT, "-C", str(repo), *args], capture_output=True, text=True, check=True
+    )
+    return done.stdout.strip()
+
+
+def _git_project(tmp_path: Path, *, commit: bool = True) -> Path:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    _git(project, "init", "-q", "-b", "main")
+    (project / "README.md").write_text("before\n")
+    if commit:
+        _git(project, "add", ".")
+        _git(project, "commit", "-q", "-m", "init")
+    return project
+
+
+def _isolated(tmp_path: Path) -> tuple[ExecutionWorkflow, ThreadWorkspaces, ThreadContextStore]:
+    workspaces = ThreadWorkspaces(tmp_path / "worktrees")
+    workflow = ExecutionWorkflow(
+        project_resolver=ProjectResolver(root=tmp_path), workspaces=workspaces
+    )
+    return workflow, workspaces, ThreadContextStore(root=tmp_path / "context")
+
+
+def _go(
+    workflow: ExecutionWorkflow,
+    context: ThreadContextStore,
+    agent: object,
+    text: str,
+    thread_ts: str = "1.1",
+) -> str | None:
+    return workflow.process(
+        channel_id="C1", thread_ts=thread_ts, text=text, thread_context=context, agent=agent
+    )
+
+
+def test_confirmed_plan_in_a_git_project_is_written_to_the_thread_worktree(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    workflow, workspaces, context = _isolated(tmp_path)
+    agent = PlanningAgent(_plan())
+    _go(workflow, context, agent, "my-project README.md 수정해줘")
+
+    response = _go(workflow, context, agent, "실행")
+
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert response is not None and worktree is not None
+    assert (worktree / "README.md").read_text() == "after\n"
+    assert (project / "README.md").read_text() == "before\n"
+    assert _git(project, "status", "--porcelain") == ""
+    assert _git(worktree, "log", "-1", "--pretty=%s").startswith("bot: README를 갱신합니다")
+
+
+def test_fixed_checks_run_inside_the_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "pyproject.toml").write_text("")
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", "toml")
+    roots: list[Path] = []
+
+    def record(tools: ProjectExecutionTools, name: str) -> CommandResult:
+        roots.append(tools.root)
+        return CommandResult(name, True, "")
+
+    monkeypatch.setattr(ProjectExecutionTools, "run_check", record)
+    workflow, workspaces, context = _isolated(tmp_path)
+    agent = PlanningAgent(_plan(checks=["run_tests"]))
+    _go(workflow, context, agent, "my-project README.md 수정해줘")
+
+    _go(workflow, context, agent, "실행")
+
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert worktree is not None
+    assert roots == [worktree.resolve()]
+
+
+def test_auto_repair_writes_to_the_worktree_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "pyproject.toml").write_text("")
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", "toml")
+    checks = iter(
+        [CommandResult("run_tests", False, "test failed"), CommandResult("run_tests", True, "")]
+    )
+    monkeypatch.setattr(ProjectExecutionTools, "run_check", lambda _tools, _name: next(checks))
+    workflow, workspaces, context = _isolated(tmp_path)
+    agent = RepairingPlanningAgent(_plan(content="broken\n", checks=["run_tests"]))
+    _go(workflow, context, agent, "my-project README.md 수정해줘")
+
+    _go(workflow, context, agent, "실행")
+
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert worktree is not None
+    assert (worktree / "README.md").read_text() == "fixed\n"
+    assert (project / "README.md").read_text() == "before\n"
+
+
+def test_result_names_the_branch_the_worktree_and_the_discard_command(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, workspaces, context = _isolated(tmp_path)
+    agent = PlanningAgent(_plan())
+    _go(workflow, context, agent, "my-project README.md 수정해줘")
+
+    response = _go(workflow, context, agent, "실행")
+
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert response is not None and worktree is not None
+    assert "`bot/C1-1-1`" in response
+    assert str(worktree) in response
+    assert "폐기" in response
+
+
+def test_uncommitted_changes_in_an_approved_file_block_execution_and_writing(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "README.md").write_text("my local edit\n")
+    workflow, workspaces, context = _isolated(tmp_path)
+    agent = PlanningAgent(_plan())
+    _go(workflow, context, agent, "my-project README.md 수정해줘")
+
+    response = _go(workflow, context, agent, "실행")
+
+    assert response is not None
+    assert "`README.md`" in response and "커밋하지 않은" in response
+    assert (project / "README.md").read_text() == "my local edit\n"
+    assert workspaces.existing("my-project", "C1", "1.1") is None
+
+
+def test_project_that_is_not_a_git_repository_is_written_directly_with_a_no_rollback_warning(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "my-project"
+    project.mkdir()
+    (project / "README.md").write_text("before\n")
+    workflow, _, context = _isolated(tmp_path)
+    agent = PlanningAgent(_plan())
+
+    preview = _go(workflow, context, agent, "my-project README.md 수정해줘")
+    response = _go(workflow, context, agent, "실행")
+
+    assert preview is not None and response is not None
+    assert "롤백 불가" in preview and "롤백 불가" in response
+    assert (project / "README.md").read_text() == "after\n"
+
+
+def test_next_plan_in_a_thread_reads_files_from_its_worktree(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _isolated(tmp_path)
+    first = PlanningAgent(_plan())
+    _go(workflow, context, first, "my-project README.md 수정해줘")
+    _go(workflow, context, first, "실행")
+    second = PlanningAgent(_plan(content="third\n"))
+
+    _go(workflow, context, second, "my-project README.md 다시 수정해줘")
+
+    assert second.received_existing_files == [ExistingFile("README.md", "after\n")]
+
+
+def test_discard_removes_only_this_threads_worktree(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    workflow, workspaces, context = _isolated(tmp_path)
+    agent = PlanningAgent(_plan())
+    for thread in ("1.1", "2.2"):
+        _go(workflow, context, agent, "my-project README.md 수정해줘", thread)
+        _go(workflow, context, agent, "실행", thread)
+
+    response = _go(workflow, context, agent, "폐기", "1.1")
+
+    assert response is not None and "폐기했습니다" in response
+    assert workspaces.existing("my-project", "C1", "1.1") is None
+    assert workspaces.existing("my-project", "C1", "2.2") is not None
+    assert _git(project, "branch", "--list", "bot/C1-1-1") == ""
+    assert (project / "README.md").read_text() == "before\n"
+    assert "폐기할 작업" in (_go(workflow, context, agent, "폐기", "1.1") or "")
+
+
+def test_worktree_creation_failure_fails_safely_without_touching_the_original(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    _git(project, "branch", "bot/C1-1-1")  # the thread's branch name is already taken
+    workflow, workspaces, context = _isolated(tmp_path)
+    agent = PlanningAgent(_plan())
+    _go(workflow, context, agent, "my-project README.md 수정해줘")
+
+    response = _go(workflow, context, agent, "실행")
+
+    assert response is not None
+    assert "worktree" in response
+    assert workflow.code_work_state_store.state(channel_id="C1", thread_ts="1.1") is (
+        CodeWorkState.FAILED
+    )
+    assert (project / "README.md").read_text() == "before\n"
+    assert workspaces.existing("my-project", "C1", "1.1") is None

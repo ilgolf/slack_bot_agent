@@ -54,6 +54,7 @@ from src.request_classifier import classify_request, find_project_name_candidate
 from src.request_router import RequestIntent, RequestRouter
 from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
+from src.thread_workspace import ThreadWorkspaces, WorkspaceError
 from src.tool_policy import ToolCategory
 from src.tool_registry import ToolRegistry, definition
 
@@ -62,6 +63,8 @@ logger = logging.getLogger(__name__)
 _SLACK_MENTION = re.compile(r"<@[^>]+>")
 _CONFIRMATION = re.compile(r"^(실행|실행해줘|실행합니다)$")
 _CANCELLATION = re.compile(r"^(취소|취소해줘|취소합니다)$")
+_DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
+_NO_ROLLBACK_WARNING = "롤백 불가: 이 프로젝트는 worktree로 격리할 수 없어 원본에 직접 적용됩니다."
 # Accept a Korean postposition directly after a filename (``plan.md에``)
 # while returning only the project-relative path.
 _PATH_IN_REQUEST = re.compile(
@@ -122,8 +125,16 @@ class ProjectContextLoader:
     def __init__(self, project_resolver: ProjectResolver) -> None:
         self.project_resolver = project_resolver
 
-    def load(self, project_name: str, *, target_paths: list[str] | None = None) -> ProjectContext:
-        root = self.project_resolver.resolve(project_name).resolve()
+    def load(
+        self,
+        project_name: str,
+        *,
+        target_paths: list[str] | None = None,
+        root: Path | None = None,
+    ) -> ProjectContext:
+        """`root` swaps in a thread worktree of the same project for the files read."""
+        resolved = self.project_resolver.resolve(project_name).resolve()
+        root = root.resolve() if root is not None else resolved
         directories = {root}
         for target_path in target_paths or []:
             target = _project_path(root, target_path)
@@ -433,6 +444,9 @@ class ExecutionResult:
     remaining_risks: list[str]
     repair_attempts: int = 0
     repair_failure_reason: str | None = None
+    workspace_branch: str | None = None
+    workspace_path: str | None = None
+    rollback_warning: str | None = None
 
 
 class ProjectExecutionTools:
@@ -675,7 +689,9 @@ class ExecutionWorkflow:
         awaiting_project_store: AwaitingProjectStore | None = None,
         code_work_state_store: CodeWorkStateStore | None = None,
         max_autopilot_items: int = DEFAULT_MAX_AUTOPILOT_ITEMS,
+        workspaces: ThreadWorkspaces | None = None,
     ) -> None:
+        self.workspaces = workspaces
         self.max_autopilot_items = max_autopilot_items
         self._autopilot_active: set[tuple[str, str]] = set()
         self._autopilot_cancelled: set[tuple[str, str]] = set()
@@ -714,6 +730,8 @@ class ExecutionWorkflow:
             if defer_missing_confirmation and cancellation_response is None:
                 return None
             return cancellation_response
+        if _DISCARD.fullmatch(command_text):
+            return self._discard(channel_id, thread_ts)
         if RequestRouter().route(command_text).intent in {
             RequestIntent.SYSTEM_INQUIRY,
             RequestIntent.LINEAR_READ,
@@ -776,6 +794,12 @@ class ExecutionWorkflow:
         if not callable(creator):
             return "코드 실행 계획에는 LLM 코드 에이전트가 필요합니다."
         creator = _with_thread_ids(creator, channel_id, thread_ts)
+        # Later plans in a thread build on its worktree, not on the original checkout.
+        workspace_root = (
+            self.workspaces.existing(project_name, channel_id, thread_ts)
+            if self.workspaces is not None and not autopilot
+            else None
+        )
         self.code_work_state_store.set(
             channel_id=channel_id,
             thread_ts=thread_ts,
@@ -860,7 +884,9 @@ class ExecutionWorkflow:
                 project_root = self.project_resolver.resolve(project_name)
                 related_paths = _linear_planning_sources(project_root)
                 target_paths = list(dict.fromkeys([*target_paths, *related_paths]))
-            context = self.context_loader.load(project_name, target_paths=target_paths)
+            context = self.context_loader.load(
+                project_name, target_paths=target_paths, root=workspace_root
+            )
             skills = self.skill_registry.select(intent=command_text, project_root=context.root)
             existing_files = _read_existing_files(context.root, target_paths)
             plan = _create_plan_with_format_retry(
@@ -872,7 +898,9 @@ class ExecutionWorkflow:
                 # Show them and ask once more so nothing is rewritten blind.
                 target_paths = list(dict.fromkeys([*target_paths, *unseen]))
                 existing_files = _read_existing_files(context.root, target_paths)
-                context = self.context_loader.load(project_name, target_paths=target_paths)
+                context = self.context_loader.load(
+                    project_name, target_paths=target_paths, root=workspace_root
+                )
                 plan = _create_plan_with_format_retry(
                     creator, contextual_text, context, skills, existing_files
                 )
@@ -929,7 +957,7 @@ class ExecutionWorkflow:
             ):
                 raise ValueError("계획 문서 요청은 명시한 plan.md만 변경할 수 있습니다")
             detailed_context = self.context_loader.load(
-                project_name, target_paths=plan.affected_files
+                project_name, target_paths=plan.affected_files, root=workspace_root
             )
         except AmbiguousProject:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
@@ -966,7 +994,7 @@ class ExecutionWorkflow:
         )
         self.plan_store.put(channel_id, thread_ts, plan, request=command_text)
         if autopilot:
-            return self._execute_pending(channel_id, thread_ts, agent)
+            return self._execute_pending(channel_id, thread_ts, agent, isolate=False)
         self.code_work_state_store.set(
             channel_id=channel_id,
             thread_ts=thread_ts,
@@ -984,9 +1012,12 @@ class ExecutionWorkflow:
         evidence_paths = [
             item.relative_path for item in existing_files if item.content is not None
         ]
-        return render_plan_preview(
+        preview = render_plan_preview(
             plan, detailed_context.git, diffs, evidence_paths=evidence_paths
         )
+        if self.workspaces is not None and not self.workspaces.can_isolate(detailed_context.root):
+            preview += f"\n⚠️ {_NO_ROLLBACK_WARNING}"
+        return preview
 
     def _run_autopilot(
         self,
@@ -1111,7 +1142,41 @@ class ExecutionWorkflow:
             return "보류된 실행 계획이 만료되었습니다. 파일은 변경하지 않았습니다."
         return None
 
-    def _execute_pending(self, channel_id: str, thread_ts: str, agent: object) -> str:
+    def _discard(self, channel_id: str, thread_ts: str) -> str:
+        none_message = "폐기할 작업 브랜치(worktree)가 없습니다."
+        if self.workspaces is None:
+            return none_message
+        try:
+            removed = self.workspaces.discard_thread(channel_id, thread_ts)
+        except WorkspaceError as exc:
+            return f"❌ {exc}"
+        self.plan_store.cancel(channel_id, thread_ts)
+        if not removed:
+            return none_message
+        self._set_code_work_state(channel_id, thread_ts, CodeWorkState.CANCELLED)
+        return (
+            "🗑️ 이 스레드의 작업 브랜치와 worktree를 폐기했습니다. "
+            "원본 체크아웃은 변경하지 않았습니다."
+        )
+
+    def _prepare_workspace(
+        self, context: ProjectContext, plan: ExecutionPlan, channel_id: str, thread_ts: str
+    ) -> tuple[Path | None, str | None]:
+        """The thread worktree to write in, or `None` plus a warning when the project
+        cannot be isolated."""
+        assert self.workspaces is not None
+        if not self.workspaces.can_isolate(context.root):
+            return None, _NO_ROLLBACK_WARNING
+        if self.workspaces.existing(plan.project_name, channel_id, thread_ts) is None:
+            # A fresh worktree starts from HEAD, so uncommitted edits to approved files
+            # in the original would be silently dropped or overwritten.
+            self.workspaces.check_clean(context.root, plan.affected_files)
+        path = self.workspaces.ensure(context.root, plan.project_name, channel_id, thread_ts)
+        return path, (None if path else _NO_ROLLBACK_WARNING)
+
+    def _execute_pending(
+        self, channel_id: str, thread_ts: str, agent: object, *, isolate: bool = True
+    ) -> str:
         status, pending = self.plan_store.take(channel_id, thread_ts)
         if status is PendingPlanStatus.EXPIRED:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
@@ -1123,13 +1188,27 @@ class ExecutionWorkflow:
         self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IMPLEMENTING)
         changed_files: list[str] = []
         diffs: list[str] = []
+        workspace: Path | None = None
+        rollback_warning: str | None = None
         try:
             context = self.context_loader.load(plan.project_name, target_paths=plan.affected_files)
+            if isolate and self.workspaces is not None:
+                workspace, rollback_warning = self._prepare_workspace(
+                    context, plan, channel_id, thread_ts
+                )
+                if workspace is not None:
+                    context = self.context_loader.load(
+                        plan.project_name, target_paths=plan.affected_files, root=workspace
+                    )
             tools = ProjectExecutionTools(context.root, plan.affected_files)
             for step in plan.steps:
                 changed_file, diff = tools.write_file(step.path, step.content)
                 changed_files.append(changed_file)
                 diffs.append(diff)
+        except WorkspaceError as exc:
+            logger.warning("workspace_failed project=%s", plan.project_name)
+            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+            return f"❌ 실행하지 못했습니다. 파일은 변경하지 않았습니다.\n{exc}"
         except (OSError, ValueError) as exc:
             logger.warning(
                 "execution_failed project=%s reason=%s applied=%s",
@@ -1194,13 +1273,27 @@ class ExecutionWorkflow:
                 break
             failure_fingerprints.add(failure_fingerprint)
 
+        remaining_risks = _remaining_risks(checks)
+        if workspace is not None and self.workspaces is not None:
+            try:
+                self.workspaces.commit(workspace, plan.affected_files, plan.goal)
+            except WorkspaceError as exc:
+                logger.warning("workspace_commit_failed project=%s", plan.project_name)
+                remaining_risks.append(f"{exc} worktree의 변경은 커밋되지 않았습니다.")
         result = ExecutionResult(
             changed_files=changed_files,
             diffs=diffs,
             checks=checks,
-            remaining_risks=_remaining_risks(checks),
+            remaining_risks=remaining_risks,
             repair_attempts=repair_attempts,
             repair_failure_reason=repair_failure_reason,
+            workspace_branch=(
+                self.workspaces.branch_name(channel_id, thread_ts)
+                if workspace is not None and self.workspaces is not None
+                else None
+            ),
+            workspace_path=str(workspace) if workspace is not None else None,
+            rollback_warning=rollback_warning,
         )
         self._last_results[(channel_id, thread_ts)] = result
         logger.info(
@@ -1392,8 +1485,16 @@ def render_execution_result(plan: ExecutionPlan, result: ExecutionResult) -> str
     instructions = ", ".join(f"`{item}`" for item in plan.applied_agents) or "없음"
     skills = ", ".join(f"`{item}`" for item in plan.applied_skills) or "없음"
     outcome = _outcome_line(result)
+    workspace = ""
+    if result.workspace_branch is not None:
+        workspace = (
+            f"작업 브랜치: `{result.workspace_branch}`\n작업 경로: `{result.workspace_path}`\n"
+            "원본 체크아웃은 변경하지 않았습니다. 결과를 버리려면 `폐기`라고 보내세요.\n"
+        )
+    elif result.rollback_warning is not None:
+        workspace = f"⚠️ {result.rollback_warning}\n"
     return (
-        f"{outcome}\n변경 파일:\n{changes}\nDiff 요약: {_diff_summary(result.diffs)}\n"
+        f"{outcome}\n{workspace}변경 파일:\n{changes}\nDiff 요약: {_diff_summary(result.diffs)}\n"
         f"검증 결과:\n{checks}\n"
         f"적용 AGENTS.md: {instructions}\n적용 Skill: {skills}\n남은 위험:\n{risks}"
     )

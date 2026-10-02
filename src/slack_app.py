@@ -30,6 +30,7 @@ from src.slack_thread import SlackThreadReader
 from src.thread_context import ThreadContextStore
 from src.thread_summarizer import ThreadSummarizer
 from src.thread_summary_workflow import ThreadSummaryWorkflow
+from src.thread_workspace import ThreadWorkspaces
 
 
 class SlackConfigError(RuntimeError):
@@ -179,6 +180,7 @@ def start_socket_mode(
     execution_workflow = ExecutionWorkflow(
         project_resolver=ProjectResolver(root=Path(settings.projects_root).expanduser()),
         skill_registry=SkillRegistry({"codex": "~/.codex/skills"}),
+        workspaces=ThreadWorkspaces(Path(settings.worktrees_root).expanduser()),
     )
     thread_summary_workflow = (
         ThreadSummaryWorkflow(
