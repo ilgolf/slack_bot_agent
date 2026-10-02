@@ -10,7 +10,6 @@ Run locally with::
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
@@ -20,16 +19,14 @@ from slack_bolt.adapter.fastapi import SlackRequestHandler
 from src.agent import AnalysisAgent, get_agent
 from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings, get_settings
-from src.execution_workflow import ExecutionWorkflow, SkillRegistry
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.llm_intent_classifier import build_intent_classifier
-from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
 from src.request_router import RequestRouter
 from src.run_state import ThreadRunStore
 from src.slack_app import SlackConfigError, build_slack_app, handle_app_mention
 from src.thread_context import ThreadContextStore
-from src.thread_workspace import ThreadWorkspaces
+from src.workflow_factory import build_execution_workflow
 
 
 class DebugCommand(BaseModel):
@@ -47,11 +44,7 @@ def create_app(
     settings = settings or get_settings()
     thread_context = thread_context or ThreadContextStore(root=settings.thread_context_root)
     agent = agent or get_agent(settings.llm_provider, settings=settings)
-    execution_workflow = ExecutionWorkflow(
-        project_resolver=ProjectResolver(root=Path(settings.projects_root).expanduser()),
-        skill_registry=SkillRegistry({"codex": "~/.codex/skills"}),
-        workspaces=ThreadWorkspaces(Path(settings.worktrees_root).expanduser()),
-    )
+    execution_workflow = build_execution_workflow(settings)
     artifact_workflow = ArtifactGenerationWorkflow()
     linear_workflow = LinearIntegrationWorkflow(settings=settings)
     coordinator = RequestCoordinator(
