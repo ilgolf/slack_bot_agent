@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from src.agent import AnalysisResult, PlanResponseFormatError
+from src.code_agent_analysis import CodeAgentAnalysisAgent, RunnerResult
 from src.execution_workflow import (
     CommandResult,
     ExecutionPlan,
@@ -2279,3 +2280,123 @@ def test_parse_execution_plan_accepts_text_block_list_content() -> None:
     plan = parse_execution_plan([{"type": "text", "text": payload, "annotations": []}])
 
     assert plan.affected_files == ["src/feature.py"]
+
+
+class _TextRunner:
+    """Fake text-only runner: replies from a queue, never touches files itself."""
+
+    name = "fake_runner"
+
+    def __init__(self, replies: list[str | Exception]) -> None:
+        self.replies = replies
+        self.prompts: list[str] = []
+
+    def complete(self, prompt: str, *, timeout_seconds: float) -> str:
+        self.prompts.append(prompt)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    def run(self, prompt: str, **_: object) -> RunnerResult:
+        raise AssertionError("code planning must not use the tool-running path")
+
+
+def _plan_json(content: str = "after\n") -> str:
+    return json.dumps(
+        {
+            "goal": "README 수정",
+            "project_name": "my-project",
+            "affected_files": ["README.md"],
+            "steps": [{"action": "write_file", "path": "README.md", "content": content}],
+            "verification_commands": [],
+            "risk": "modify",
+        }
+    )
+
+
+def _code_agent_workflow(
+    tmp_path: Path, replies: list[str | Exception]
+) -> tuple[ExecutionWorkflow, CodeAgentAnalysisAgent, ThreadContextStore, Path, CodeWorkStateStore]:
+    project = tmp_path / "my-project"
+    project.mkdir(exist_ok=True)
+    (project / "README.md").write_text("before\n")
+    state_store = CodeWorkStateStore()
+    workflow = ExecutionWorkflow(
+        project_resolver=ProjectResolver(root=tmp_path), code_work_state_store=state_store
+    )
+    agent = CodeAgentAnalysisAgent(
+        runner=_TextRunner(replies), project_resolver=ProjectResolver(root=tmp_path)
+    )
+    return workflow, agent, ThreadContextStore(root=tmp_path / "context"), project, state_store
+
+
+def _say(
+    workflow: ExecutionWorkflow, agent: object, context: ThreadContextStore, text: str
+) -> str | None:
+    return workflow.process(
+        channel_id="C1", thread_ts="1.1", text=text, thread_context=context, agent=agent
+    )
+
+
+def test_code_agent_provider_returns_a_plan_preview_for_a_plan_request(tmp_path: Path) -> None:
+    workflow, agent, context, project, _ = _code_agent_workflow(tmp_path, [_plan_json()])
+
+    response = _say(workflow, agent, context, "my-project README.md plan 짜줘")
+
+    assert response is not None
+    assert "LLM 코드 에이전트가 필요합니다" not in response
+    assert "README.md" in response
+    assert (project / "README.md").read_text() == "before\n"
+
+
+def test_code_agent_provider_writes_only_after_confirmation(tmp_path: Path) -> None:
+    workflow, agent, context, project, state = _code_agent_workflow(tmp_path, [_plan_json()])
+    _say(workflow, agent, context, "my-project README.md 수정해줘")
+
+    response = _say(workflow, agent, context, "실행")
+
+    assert response is not None
+    assert (project / "README.md").read_text() == "after\n"
+    assert state.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.SUCCEEDED
+
+
+def test_code_agent_provider_repairs_a_failed_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repair = json.dumps(
+        {"steps": [{"action": "write_file", "path": "README.md", "content": "fixed\n"}]}
+    )
+    workflow, agent, context, project, _ = _code_agent_workflow(
+        tmp_path, [_plan_json("broken\n"), repair]
+    )
+    (project / "pyproject.toml").write_text("")
+    checks = iter([CommandResult("run_tests", False, "boom"), CommandResult("run_tests", True, "")])
+    monkeypatch.setattr(ProjectExecutionTools, "run_check", lambda _tools, _name: next(checks))
+    plan_reply = json.loads(_plan_json("broken\n"))
+    plan_reply["verification_commands"] = ["run_tests"]
+    agent.runner.replies[0] = json.dumps(plan_reply)  # type: ignore[attr-defined]
+    _say(workflow, agent, context, "my-project README.md 수정해줘")
+
+    response = _say(workflow, agent, context, "실행")
+
+    assert response is not None
+    assert "자동 복구 1회" in response
+    assert (project / "README.md").read_text() == "fixed\n"
+
+
+def test_runner_failure_while_planning_fails_safely_without_changing_files(
+    tmp_path: Path,
+) -> None:
+    from src.code_agent_analysis import RunnerError
+
+    workflow, agent, context, project, state = _code_agent_workflow(
+        tmp_path, [RunnerError("SECRET")]
+    )
+
+    response = _say(workflow, agent, context, "my-project README.md 수정해줘")
+
+    assert response is not None
+    assert "SECRET" not in response
+    assert state.state(channel_id="C1", thread_ts="1.1") is CodeWorkState.FAILED
+    assert (project / "README.md").read_text() == "before\n"

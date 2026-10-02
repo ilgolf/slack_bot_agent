@@ -10,9 +10,23 @@ from pathlib import Path
 
 import pytest
 
-from src.agent import AnalysisAgentError, AnalysisResult, insufficient_evidence_result
+from src.agent import (
+    AnalysisAgentError,
+    AnalysisResult,
+    PlanResponseFormatError,
+    insufficient_evidence_result,
+)
 from src.agent_trace import ThreadTraceStore
 from src.code_agent_analysis import CodeAgentAnalysisAgent, RunnerError, RunnerResult, RunnerTimeout
+from src.code_plan_prompts import build_code_plan_prompt
+from src.execution_workflow import (
+    CommandResult,
+    ExecutionPlan,
+    ExecutionRisk,
+    ExistingFile,
+    GitState,
+    ProjectContext,
+)
 from src.project_resolver import ProjectResolver
 
 
@@ -25,6 +39,15 @@ class FakeRunner:
     output: str = "ok"
     files_read: tuple[Path, ...] = ()
     error: Exception | None = None
+    complete_calls: list[str] = field(default_factory=list)
+    complete_output: str = ""
+    complete_error: Exception | None = None
+
+    def complete(self, prompt: str, *, timeout_seconds: float) -> str:
+        self.complete_calls.append(prompt)
+        if self.complete_error is not None:
+            raise self.complete_error
+        return self.complete_output
 
     def run(
         self, prompt: str, *, cwd: Path, timeout_seconds: float, max_turns: int
@@ -281,3 +304,136 @@ def test_runner_prompt_instructs_read_only_source_reading_without_requiring_json
     assert "파일을 수정하지" in prompt
     assert "직접 읽" in prompt
     assert "JSON" not in prompt
+
+
+_PLAN_JSON = (
+    '{"goal": "g", "project_name": "demo", "affected_files": ["a.py"], '
+    '"steps": [{"action": "write_file", "path": "a.py", "content": "x"}], '
+    '"verification_commands": ["run_tests"], "risk": "modify"}'
+)
+
+
+def test_create_execution_plan_sends_plan_prompt_to_text_only_complete(tmp_path: Path) -> None:
+    runner = FakeRunner(complete_output=_PLAN_JSON)
+    agent = CodeAgentAnalysisAgent(runner=runner, project_resolver=ProjectResolver(root=tmp_path))
+    context = ProjectContext(
+        project_name="demo", root=tmp_path, instructions=[], git=GitState(is_repository=False)
+    )
+    existing = [ExistingFile(relative_path="a.py", content=None)]
+
+    plan = agent.create_execution_plan("plan 짜줘", context, [], existing)
+
+    assert runner.complete_calls == [build_code_plan_prompt("plan 짜줘", context, [], existing)]
+    assert runner.calls == []
+    assert plan.affected_files == ["a.py"]
+
+
+def _plan_agent(
+    tmp_path: Path, runner: FakeRunner, store: ThreadTraceStore | None = None
+) -> tuple[CodeAgentAnalysisAgent, ProjectContext]:
+    agent = CodeAgentAnalysisAgent(
+        runner=runner,
+        project_resolver=ProjectResolver(root=tmp_path),
+        thread_trace_store=store,
+    )
+    context = ProjectContext(
+        project_name="demo", root=tmp_path, instructions=[], git=GitState(is_repository=False)
+    )
+    return agent, context
+
+
+def test_create_execution_plan_parses_a_fenced_json_reply(tmp_path: Path) -> None:
+    runner = FakeRunner(complete_output=f"```json\n{_PLAN_JSON}\n```")
+    agent, context = _plan_agent(tmp_path, runner)
+
+    plan = agent.create_execution_plan("plan", context, [], [])
+
+    assert plan.goal == "g"
+    assert plan.risk is ExecutionRisk.MODIFY
+
+
+def test_create_execution_plan_raises_format_error_on_malformed_reply(tmp_path: Path) -> None:
+    agent, context = _plan_agent(tmp_path, FakeRunner(complete_output="계획은 다음과 같습니다"))
+
+    with pytest.raises(PlanResponseFormatError):
+        agent.create_execution_plan("plan", context, [], [])
+
+
+@pytest.mark.parametrize("error", [RunnerTimeout(), RunnerError("SECRET sdk output")])
+def test_create_execution_plan_hides_runner_failures(tmp_path: Path, error: Exception) -> None:
+    agent, context = _plan_agent(tmp_path, FakeRunner(complete_error=error))
+
+    with pytest.raises(AnalysisAgentError) as raised:
+        agent.create_execution_plan("plan", context, [], [])
+
+    assert "SECRET" not in str(raised.value)
+    assert not isinstance(raised.value, PlanResponseFormatError)
+
+
+_REPAIR_JSON = '{"steps": [{"action": "write_file", "path": "a.py", "content": "fixed"}]}'
+
+
+def _repair_inputs() -> tuple[ExecutionPlan, list[ExistingFile], list[CommandResult]]:
+    plan = ExecutionPlan(
+        goal="g",
+        project_name="demo",
+        affected_files=["a.py"],
+        steps=[],
+        verification_commands=["run_tests"],
+        risk=ExecutionRisk.MODIFY,
+    )
+    return plan, [ExistingFile("a.py", "broken")], [CommandResult("run_tests", False, "boom")]
+
+
+def test_create_repair_steps_sends_repair_prompt_to_complete_and_parses_steps(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(complete_output=_REPAIR_JSON)
+    agent, _ = _plan_agent(tmp_path, runner)
+
+    steps = agent.create_repair_steps(*_repair_inputs())
+
+    assert [(s.action, s.path, s.content) for s in steps] == [("write_file", "a.py", "fixed")]
+    assert "boom" in runner.complete_calls[0]
+    assert runner.calls == []
+
+
+def test_create_repair_steps_raises_on_malformed_reply(tmp_path: Path) -> None:
+    agent, _ = _plan_agent(tmp_path, FakeRunner(complete_output="not json"))
+
+    with pytest.raises(AnalysisAgentError):
+        agent.create_repair_steps(*_repair_inputs())
+
+
+@pytest.mark.parametrize("error", [RunnerTimeout(), RunnerError("SECRET sdk output")])
+def test_create_repair_steps_hides_runner_failures(tmp_path: Path, error: Exception) -> None:
+    agent, _ = _plan_agent(tmp_path, FakeRunner(complete_error=error))
+
+    with pytest.raises(AnalysisAgentError) as raised:
+        agent.create_repair_steps(*_repair_inputs())
+
+    assert "SECRET" not in str(raised.value)
+
+
+def test_plan_and_repair_generation_each_record_a_content_free_trace_step(
+    tmp_path: Path,
+) -> None:
+    store = ThreadTraceStore()
+    runner = FakeRunner(name="claude_code", complete_output=_PLAN_JSON)
+    agent, context = _plan_agent(tmp_path, runner, store)
+
+    agent.create_execution_plan("plan", context, [], [], channel_id="C1", thread_ts="1.0")
+    runner.complete_output = _REPAIR_JSON
+    agent.create_repair_steps(*_repair_inputs(), channel_id="C1", thread_ts="1.0")
+    runner.complete_error = RunnerTimeout()
+    with pytest.raises(AnalysisAgentError):
+        agent.create_repair_steps(*_repair_inputs(), channel_id="C1", thread_ts="1.0")
+
+    trace = store.get("C1", "1.0")
+    assert trace is not None
+    assert [(s.phase, s.tool_name, s.outcome) for s in trace.steps] == [
+        ("plan", "claude_code", "ok"),
+        ("repair", "claude_code", "ok"),
+        ("repair", "claude_code", "timeout"),
+    ]
+    assert all(s.input_fields == () and s.evidence_refs == () for s in trace.steps)

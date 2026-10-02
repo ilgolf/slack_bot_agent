@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import inspect
 import json
 import logging
 import re
@@ -19,9 +20,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from threading import Lock
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from src.agent import PlanResponseFormatError
 from src.code_work_markers import (
@@ -555,6 +557,15 @@ class ProjectExecutionTools:
         )
 
 
+def _with_thread_ids(
+    func: Callable[..., Any], channel_id: str, thread_ts: str
+) -> Callable[..., Any]:
+    """Pass the Slack thread to agents that trace per thread; others are unchanged."""
+    if "channel_id" not in inspect.signature(func).parameters:
+        return func
+    return partial(func, channel_id=channel_id, thread_ts=thread_ts)
+
+
 def _create_plan_with_format_retry(
     creator: Callable[..., ExecutionPlan],
     request: str,
@@ -724,6 +735,7 @@ class ExecutionWorkflow:
         creator = getattr(agent, "create_execution_plan", None)
         if not callable(creator):
             return "코드 실행 계획에는 LLM 코드 에이전트가 필요합니다."
+        creator = _with_thread_ids(creator, channel_id, thread_ts)
         self.code_work_state_store.set(
             channel_id=channel_id,
             thread_ts=thread_ts,
@@ -1079,6 +1091,8 @@ class ExecutionWorkflow:
         repair_attempts = 0
         repair_failure_reason: str | None = None
         repairer = getattr(agent, "create_repair_steps", None)
+        if callable(repairer):
+            repairer = _with_thread_ids(repairer, channel_id, thread_ts)
         failure_fingerprints = {_verification_fingerprint(checks)}
         repair_fingerprints: set[str] = set()
         while not all(check.success for check in checks) and callable(repairer):
