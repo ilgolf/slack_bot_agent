@@ -20,7 +20,12 @@ from typing import Any, Protocol
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import StructuredTool
 
-from src.agent import AnalysisAgentError, AnalysisResult, PlanResponseFormatError
+from src.agent import (
+    AnalysisAgentError,
+    AnalysisResult,
+    PlanResponseFormatError,
+    insufficient_evidence_result,
+)
 from src.agent_trace import AgentTraceRecorder, ThreadTraceStore
 from src.artifact_generation import ArtifactDraft, ArtifactDraftCreator
 from src.code_agent_loop import AgentPlan, CodeAgentLoop, FinalAnswer, FinalStatus
@@ -126,14 +131,6 @@ def _parse_analysis_result(content: object, *, sources: list[str] | None = None)
         raise AnalysisAgentError(
             f"model reply is not the expected JSON shape: {content!r}"
         ) from exc
-
-
-def _insufficient_evidence_result() -> AnalysisResult:
-    return AnalysisResult(
-        summary="분석 근거 파일을 읽지 못했습니다. 분석할 파일을 지정해 주세요.",
-        findings=[],
-        limitations=["근거 파일 없이 분석 결과를 만들 수 없습니다."],
-    )
 
 
 class ChatModel(Protocol):
@@ -284,7 +281,7 @@ class LangChainAnalysisAgent(ArtifactDraftCreator):
             if sources and not has_non_readme_source:
                 # every source read so far is README.md — not enough grounds
                 # for a general analysis answer, same as no source at all.
-                return _insufficient_evidence_result()
+                return insufficient_evidence_result()
             return AnalysisResult(
                 summary=answer.summary,
                 findings=list(answer.findings),
@@ -292,7 +289,7 @@ class LangChainAnalysisAgent(ArtifactDraftCreator):
                 limitations=list(answer.limitations),
             )
         if answer.status is FinalStatus.INSUFFICIENT_EVIDENCE:
-            return _insufficient_evidence_result()
+            return insufficient_evidence_result()
 
         executed_tools = ", ".join(answer.evidence.tools) or "없음"
         return AnalysisResult(
@@ -423,7 +420,6 @@ class LangChainAnalysisAgent(ArtifactDraftCreator):
             return parse_execution_plan(response.content)
         except ValueError as exc:
             raise PlanResponseFormatError(str(exc)) from exc
-
 
     def create_repair_steps(
         self,

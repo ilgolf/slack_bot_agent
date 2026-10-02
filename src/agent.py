@@ -36,6 +36,14 @@ class AnalysisResult:
     limitations: list[str] = field(default_factory=list)
 
 
+def insufficient_evidence_result() -> AnalysisResult:
+    return AnalysisResult(
+        summary="분석 근거 파일을 읽지 못했습니다. 분석할 파일을 지정해 주세요.",
+        findings=[],
+        limitations=["근거 파일 없이 분석 결과를 만들 수 없습니다."],
+    )
+
+
 class AnalysisAgent(Protocol):
     def analyze(
         self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
