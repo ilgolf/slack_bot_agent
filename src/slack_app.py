@@ -14,7 +14,6 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from src.agent import AnalysisAgent
-from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.llm_intent_classifier import build_intent_classifier
@@ -61,8 +60,6 @@ def handle_app_mention(
         initial_status = "계획 중입니다…"
     elif intent in {RequestIntent.LINEAR_READ, RequestIntent.LINEAR_MUTATION}:
         initial_status = "Linear 작업 중입니다…"
-    elif intent is RequestIntent.ARTIFACT_GENERATION:
-        initial_status = "파일 초안 생성 중입니다…"
     elif intent is RequestIntent.THREAD_SUMMARY:
         initial_status = "스레드 요약 중입니다…"
     status_message = say(text=initial_status, thread_ts=thread_ts)
@@ -128,7 +125,6 @@ def start_socket_mode(
 
     slack_app = build_slack_app(settings)
     run_store = ThreadRunStore()
-    artifact_workflow = ArtifactGenerationWorkflow()
     linear_workflow = LinearIntegrationWorkflow(settings=settings)
     execution_workflow = build_execution_workflow(settings)
     thread_summary_workflow = (
@@ -141,7 +137,6 @@ def start_socket_mode(
     coordinator = RequestCoordinator(
         router=RequestRouter(intent_classifier=build_intent_classifier(agent)),
         execution_workflow=execution_workflow,
-        artifact_workflow=artifact_workflow,
         linear_workflow=linear_workflow,
         thread_summary_workflow=thread_summary_workflow,
     )

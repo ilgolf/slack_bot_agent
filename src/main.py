@@ -17,7 +17,6 @@ from pydantic import BaseModel
 from slack_bolt.adapter.fastapi import SlackRequestHandler
 
 from src.agent import AnalysisAgent, get_agent
-from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings, get_settings
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.llm_intent_classifier import build_intent_classifier
@@ -45,12 +44,10 @@ def create_app(
     thread_context = thread_context or ThreadContextStore(root=settings.thread_context_root)
     agent = agent or get_agent(settings.llm_provider, settings=settings)
     execution_workflow = build_execution_workflow(settings)
-    artifact_workflow = ArtifactGenerationWorkflow()
     linear_workflow = LinearIntegrationWorkflow(settings=settings)
     coordinator = RequestCoordinator(
         router=RequestRouter(intent_classifier=build_intent_classifier(agent)),
         execution_workflow=execution_workflow,
-        artifact_workflow=artifact_workflow,
         linear_workflow=linear_workflow,
     )
 

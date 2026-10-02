@@ -6,7 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from src.agent import AnalysisAgent
-from src.artifact_generation import ArtifactGenerationWorkflow
 from src.dispatch import dispatch_command
 from src.execution_workflow import ExecutionWorkflow
 from src.linear_workflow import LinearIntegrationWorkflow
@@ -20,7 +19,6 @@ from src.thread_summary_workflow import ThreadSummaryWorkflow
 class RequestCoordinator:
     router: RequestRouter
     execution_workflow: ExecutionWorkflow
-    artifact_workflow: ArtifactGenerationWorkflow
     linear_workflow: LinearIntegrationWorkflow
     thread_summary_workflow: ThreadSummaryWorkflow | None = None
 
@@ -112,17 +110,6 @@ class RequestCoordinator:
                 )
                 or "코드 작업 요청을 이해하지 못했습니다."
             )
-        if routed.intent is RequestIntent.ARTIFACT_GENERATION:
-            return (
-                self.artifact_workflow.process(
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
-                    text=text,
-                    thread_context=thread_context,
-                    agent=agent,
-                )
-                or "파일 생성 요청을 이해하지 못했습니다."
-            )
         if routed.intent in {RequestIntent.LINEAR_READ, RequestIntent.LINEAR_MUTATION}:
             return (
                 self.linear_workflow.process(
@@ -182,19 +169,6 @@ class RequestCoordinator:
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
     ) -> str:
-        if routed.confirmation_verb == "저장":
-            if not self.artifact_workflow.has_pending(channel_id, thread_ts):
-                return "저장할 파일 초안이 없습니다. 먼저 파일 생성 요청을 보내 주세요."
-            return (
-                self.artifact_workflow.process(
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
-                    text=text,
-                    thread_context=thread_context,
-                    agent=agent,
-                )
-                or "저장할 파일 초안이 없습니다."
-            )
         # Try code execution directly rather than relying on a separate
         # ownership pre-check. A confirmation must never fall through to LLM
         # analysis merely because a pending-store observation races or expires.
@@ -233,7 +207,7 @@ class RequestCoordinator:
     ) -> str:
         owners = [
             workflow
-            for workflow in (self.execution_workflow, self.artifact_workflow, self.linear_workflow)
+            for workflow in (self.execution_workflow, self.linear_workflow)
             if workflow.has_pending(channel_id, thread_ts)
         ]
         if not owners:

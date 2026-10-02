@@ -19,7 +19,6 @@ class RequestIntent(StrEnum):
     CONTROL_CONFIRM = "control_confirm"
     CONTROL_CANCEL = "control_cancel"
     CODE_WORK = "code_work"
-    ARTIFACT_GENERATION = "artifact_generation"
     LINEAR_READ = "linear_read"
     LINEAR_MUTATION = "linear_mutation"
     PROJECT_ANALYSIS = "project_analysis"
@@ -38,14 +37,11 @@ class RoutedRequest:
 
 
 _MENTION = re.compile(r"<@[^>]+>")
-_CONFIRM = re.compile(r"^(실행|실행해줘|실행합니다|저장|저장해줘|저장합니다)$")
+_CONFIRM = re.compile(r"^(실행|실행해줘|실행합니다)$")
 _CANCEL = re.compile(r"^(취소|취소해줘|취소합니다)$")
 _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
-# A thread summary written to a file stays an artifact request.
-_FILE_OUTPUT_MARKERS = ("만들", "생성", "파일", "저장", "create", "write")
 # Asking about the feature is a question, not a request to run it.
 _FEATURE_QUESTION_MARKERS = ("기능", "가능", "지원", "어떻게", "방법")
-_ARTIFACT_MARKERS = ("생성", "만들", "정리", "create", "write", "저장 위치")
 _LINEAR_CREATE = ("이슈 생성", "티켓 생성", "이슈 추가", "티켓 추가", "이슈 만들", "티켓 만들")
 _LINEAR_UPDATE = ("이슈 수정", "티켓 수정", "이슈 변경", "티켓 변경", "이슈 업데이트")
 _LINEAR_READ = (
@@ -105,7 +101,6 @@ class RequestRouter:
 
         if (
             _is_thread_summary_line(command_line)
-            and not any(marker in command_line for marker in _FILE_OUTPUT_MARKERS)
             and not any(marker in command_line for marker in _FEATURE_QUESTION_MARKERS)
         ):
             return RoutedRequest(RequestIntent.THREAD_SUMMARY, command, project_name)
@@ -143,8 +138,6 @@ class RequestRouter:
             return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
         if "linear" in normalized:
             return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
-        if any(marker in normalized for marker in _ARTIFACT_MARKERS):
-            return RoutedRequest(RequestIntent.ARTIFACT_GENERATION, command, project_name)
         if any(marker in normalized for marker in _SYSTEM_MARKERS):
             return RoutedRequest(RequestIntent.SYSTEM_INQUIRY, command, project_name)
         if (

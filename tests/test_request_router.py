@@ -70,14 +70,13 @@ def test_linear_workspace_read_is_not_project_analysis() -> None:
     assert routed.intent is RequestIntent.LINEAR_READ
 
 
-def test_confirmation_and_artifact_are_typed_separately() -> None:
+def test_only_execute_confirms_and_file_requests_are_not_a_separate_intent() -> None:
     router = RequestRouter()
 
-    assert router.route("저장").intent is RequestIntent.CONTROL_CONFIRM
     assert router.route("실행").confirmation_verb == "실행"
-    assert router.route("스레드 요약해서 md 파일로 만들어").intent is (
-        RequestIntent.ARTIFACT_GENERATION
-    )
+    assert router.route("저장").intent is RequestIntent.PROJECT_ANALYSIS
+    assert router.route("이메일 목록 정리해줘").intent is RequestIntent.PROJECT_ANALYSIS
+    assert router.route("스레드 요약해서 md 파일로 만들어").intent is RequestIntent.THREAD_SUMMARY
 
 
 def test_ambiguous_linear_integration_question_stays_outside_linear_api() -> None:
@@ -178,7 +177,6 @@ def test_unmatched_request_stays_analysis_when_classifier_says_analysis() -> Non
     [
         RequestIntent.LINEAR_MUTATION,
         RequestIntent.CONTROL_CONFIRM,
-        RequestIntent.ARTIFACT_GENERATION,
     ],
 )
 def test_classifier_cannot_produce_intents_beyond_code_work(intent: RequestIntent) -> None:

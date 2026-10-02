@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from src.agent import FakeAnalysisAgent
-from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings
 from src.dispatch import render_result
 from src.execution_workflow import ExecutionWorkflow
@@ -27,7 +26,6 @@ def _coordinator(
     return RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=linear_workflow
         or LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
@@ -113,7 +111,6 @@ def test_autopilot_progress_updates_the_initial_status_message(tmp_path: Path) -
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
     )
     agent = SequencedPlanningAgent(
@@ -156,7 +153,6 @@ def test_thread_summary_request_shows_a_thread_summary_status(tmp_path: Path) ->
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
         thread_summary_workflow=ThreadSummaryWorkflow(
             reader=OneMessageReader(), summarizer=FixedSummarizer()

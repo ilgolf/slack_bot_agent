@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.agent import FakeAnalysisAgent
-from src.artifact_generation import ArtifactGenerationWorkflow
 from src.config import Settings
 from src.execution_workflow import ExecutionWorkflow
 from src.linear_workflow import LinearIntegrationWorkflow
@@ -113,7 +112,6 @@ def test_coordinator_routes_thread_summary_and_records_only_request_and_response
     coordinator = RequestCoordinator(
         router=RequestRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
-        artifact_workflow=ArtifactGenerationWorkflow(),
         linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
         thread_summary_workflow=ThreadSummaryWorkflow(
             reader=FakeReader(_messages(2)), summarizer=summarizer
