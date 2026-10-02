@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -80,26 +80,33 @@ class ClaudeSdkRunner:
         )
 
 
-def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
-    """`tools` removes every other built-in tool from the model's context; the same
-    list in `allowed_tools` only pre-approves these so no prompt blocks a headless run."""
-    project_root = Path(cwd)
+def _pre_tool_use_guard(
+    is_allowed: Callable[[str, Mapping[str, object]], bool], reason: str, tools: Sequence[str]
+) -> HookMatcher:
+    """One `PreToolUse` hook that denies every tool call `is_allowed` rejects."""
 
     async def guard(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
         if hook_input["hook_event_name"] != "PreToolUse":
             return {}
-        if is_allowed_read(project_root, hook_input["tool_name"], hook_input["tool_input"]):
+        if is_allowed(hook_input["tool_name"], hook_input["tool_input"]):
             return {}
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": "프로젝트 밖 경로는 읽을 수 없습니다.",
+                "permissionDecisionReason": reason,
             }
         }
 
+    return HookMatcher(matcher="|".join(tools), hooks=[guard])
+
+
+def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
+    """`tools` removes every other built-in tool from the model's context; the same
+    list in `allowed_tools` only pre-approves these so no prompt blocks a headless run."""
+    project_root = Path(cwd)
     return ClaudeAgentOptions(
         tools=list(_READ_ONLY_TOOLS),
         allowed_tools=list(_READ_ONLY_TOOLS),
@@ -108,7 +115,15 @@ def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
         # `[]` is SDK isolation mode: no `~/.claude` settings, hooks or CLAUDE.md leak in.
         setting_sources=[],
         permission_mode="dontAsk",
-        hooks={"PreToolUse": [HookMatcher(matcher="|".join(_READ_ONLY_TOOLS), hooks=[guard])]},
+        hooks={
+            "PreToolUse": [
+                _pre_tool_use_guard(
+                    lambda tool, tool_input: is_allowed_read(project_root, tool, tool_input),
+                    "프로젝트 밖 경로는 읽을 수 없습니다.",
+                    _READ_ONLY_TOOLS,
+                )
+            ]
+        },
     )
 
 

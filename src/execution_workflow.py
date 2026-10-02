@@ -36,8 +36,10 @@ from src.code_work_markers import (
 )
 from src.message_text import content_text
 from src.plan_guard import (
+    MAX_WRITE_BYTES,
     PLAN_MAX_TOTAL_BYTES,
     REPAIR_MAX_TOTAL_BYTES,
+    is_protected_meta_path,
     is_risky_path,
     is_secret_path,
     reject_blanking,
@@ -84,7 +86,6 @@ _EXECUTION_MARKERS = (
     + PLAN_CONTINUATION_MARKERS
 )
 _ALLOWED_VERIFICATIONS = ("run_tests", "run_lint", "run_typecheck")
-_MAX_WRITE_BYTES = 1_000_000
 DEFAULT_MAX_AUTO_REPAIRS = 2
 DEFAULT_MAX_AUTOPILOT_ITEMS = 20
 _GREP_IGNORED_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__"})
@@ -516,7 +517,7 @@ class ProjectExecutionTools:
     def write_file(self, relative_path: str, content: str) -> tuple[str, str]:
         if relative_path not in self.allowed_paths:
             raise ValueError(f"계획에 포함되지 않은 파일입니다: {relative_path}")
-        if len(content.encode("utf-8")) > _MAX_WRITE_BYTES:
+        if len(content.encode("utf-8")) > MAX_WRITE_BYTES:
             raise ValueError("파일 내용이 허용 크기를 초과합니다")
         target = _project_path(self.root, relative_path)
         before = target.read_text(encoding="utf-8") if target.exists() else ""
@@ -647,7 +648,7 @@ def _read_existing_files(root: Path, target_paths: list[str]) -> list[ExistingFi
 
 
 def _is_guarded_path(path: str) -> bool:
-    return _is_protected_meta_path(path) or is_risky_path(path) or is_secret_path(path)
+    return is_protected_meta_path(path) or is_risky_path(path) or is_secret_path(path)
 
 
 def _unseen_existing_files(
@@ -833,7 +834,7 @@ class ExecutionWorkflow:
         user_writable_paths = explicit_target_paths
         if plan_follow_request:
             user_writable_paths = [
-                path for path in explicit_target_paths if not _is_protected_meta_path(path)
+                path for path in explicit_target_paths if not is_protected_meta_path(path)
             ]
         # Asking for a plan to be written authorizes plan.md as a write target.
         # Every other proposed file still follows the usual rules. Judged from this
@@ -919,7 +920,7 @@ class ExecutionWorkflow:
             unauthorized_protected_paths = {
                 path
                 for path in plan.affected_files
-                if _is_protected_meta_path(path) and path not in user_writable_paths
+                if is_protected_meta_path(path) and path not in user_writable_paths
             }
             if unauthorized_protected_paths:
                 plan = replace(
@@ -1631,18 +1632,6 @@ def next_unchecked_item(plan_text: str) -> str | None:
     return match.group(1) if match else None
 
 
-_PROTECTED_META_BASENAMES = {"plan.md", "plan.archive.md", "claude.md", "agents.md"}
-_PROTECTED_META_PREFIXES = (".omx/", ".claude/", ".git/")
-
-
-def _is_protected_meta_path(path: str) -> bool:
-    normalized = path.replace("\\", "/").casefold()
-    basename = normalized.rsplit("/", 1)[-1]
-    if basename in _PROTECTED_META_BASENAMES:
-        return True
-    return normalized.startswith(_PROTECTED_META_PREFIXES)
-
-
 def _validate_plan(
     plan: ExecutionPlan,
     project_name: str,
@@ -1657,7 +1646,7 @@ def _validate_plan(
         raise ValueError("계획의 프로젝트가 요청 대상과 다릅니다")
     named = set(user_named_paths)
     for path in plan.affected_files:
-        if _is_protected_meta_path(path) and path not in named:
+        if is_protected_meta_path(path) and path not in named:
             raise ValueError(
                 f"`{path}`는 프로젝트 관리 파일이라 사용자가 직접 지정한 경우에만 "
                 "수정할 수 있습니다"
@@ -1724,7 +1713,7 @@ def _validate_repair_steps(steps: object, approved_paths: Sequence[str]) -> None
             raise ValueError("허용되지 않은 자동 복구 단계입니다")
         if step.path not in approved:
             raise ValueError("자동 복구에 승인 파일 범위 밖 수정이 필요합니다")
-        if _is_protected_meta_path(step.path):
+        if is_protected_meta_path(step.path):
             raise ValueError("보호 파일은 자동 복구할 수 없어 새 계획과 확인이 필요합니다")
         if is_risky_path(step.path) or is_secret_path(step.path):
             raise ValueError("코드로 실행되거나 비밀값을 담은 파일은 자동 복구할 수 없습니다")
