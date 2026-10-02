@@ -45,10 +45,10 @@
 - [x] `src/artifact_generation.py`, `LangChainAnalysisAgent.create_artifact_draft`·`ArtifactDraftCreator` 상속, `tests/test_artifact_generation.py`, 다른 테스트의 artifact 참조(`test_block_list_responses`·`test_request_coordinator`·`test_request_router`·`test_handle_app_mention`·`test_autopilot`·`test_thread_summary_workflow`)를 정리한다
 
 ### D. HTTP 진입점 제거 (Socket Mode만)
-- [ ] `build_slack_app`이 `SLACK_SIGNING_SECRET` 없이 Socket Mode 앱을 만들 수 있음을 테스트로 먼저 확인한다 (Slack에 연결하지 않고 `App` 생성만)
-- [ ] `src/main.py`와 테스트 `test_health`·`test_slack_events_route`·`test_debug_command`·`test_create_app_agent`를 지운다
-- [ ] `pyproject.toml`에서 `fastapi`·`uvicorn[standard]`를 빼고, `Settings.slack_signing_secret`·`.env.example`의 `SLACK_SIGNING_SECRET` 항목을 지운다
-- [ ] 소스에서 `slack_bolt.adapter.fastapi`·`FastAPI` 참조가 남지 않았음을 확인한다
+- [x] `build_slack_app`이 `SLACK_SIGNING_SECRET` 없이 Socket Mode 앱을 만들 수 있음을 테스트로 먼저 확인한다 (Slack에 연결하지 않고 `App` 생성만)
+- [x] `src/main.py`와 테스트 `test_health`·`test_slack_events_route`·`test_debug_command`·`test_create_app_agent`를 지운다
+- [x] `pyproject.toml`에서 `fastapi`·`uvicorn[standard]`를 빼고, `Settings.slack_signing_secret`·`.env.example`의 `SLACK_SIGNING_SECRET` 항목을 지운다
+- [x] 소스에서 `slack_bolt.adapter.fastapi`·`FastAPI` 참조가 남지 않았음을 확인한다
 
 ### E. 문서·마무리
 - [ ] `.env.example`과 README에서 삭제된 기능(HTTP 진입점, 파일 생성, 역할별 provider) 설명을 지우거나 고친다 (README 아키텍처 그림의 `Artifact` 표기 포함 여부를 확인한다)

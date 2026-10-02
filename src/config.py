@@ -33,7 +33,6 @@ class Settings(BaseSettings):
 
     # Slack — a SEPARATE Slack app/bot from piplup-agent (v1)
     slack_bot_token: str | None = None
-    slack_signing_secret: str | None = None
     slack_app_token: str | None = None
 
     llm_provider: str = "fake"

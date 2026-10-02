@@ -107,7 +107,6 @@ def build_slack_app(settings: Settings) -> App:
 
     return App(
         token=settings.slack_bot_token,
-        signing_secret=settings.slack_signing_secret,
         token_verification_enabled=False,
     )
 
