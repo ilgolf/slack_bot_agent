@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from datetime import timedelta
 from pathlib import Path
@@ -3458,3 +3459,77 @@ def test_a_plan_authoring_request_lets_the_edit_agent_write_plan_md(tmp_path: Pa
     assert "plan.md" in agent.calls[0][2]
     assert (worktree / "plan.md").read_text() == "# new plan\n"
     assert "위반" not in response
+
+
+# --- Phase 18, G: fixed checks must not inherit the bot's environment ---------------------
+
+
+def test_edit_mode_check_passes_for_a_project_whose_tests_reject_the_bots_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-secret")
+    monkeypatch.setenv("LLM_PROVIDER", "claude_code")
+    project = _git_project(tmp_path)
+    (project / "pyproject.toml").write_text("")
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", "toml")
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(
+        _write(
+            "tests/test_env.py",
+            "import os\n\n\ndef test_bot_secrets_are_not_visible() -> None:\n"
+            "    assert 'SLACK_BOT_TOKEN' not in os.environ\n"
+            "    assert 'LLM_PROVIDER' not in os.environ\n",
+        )
+    )
+
+    response = _go(workflow, context, agent, "my-project tests/test_env.py 추가해줘")
+
+    assert response is not None
+    assert "✅ run_tests" in response, response
+    assert workflow.code_work_state_store.state(channel_id="C1", thread_ts="1.1") is (
+        CodeWorkState.SUCCEEDED
+    )
+
+
+def test_fixed_checks_run_without_the_bots_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-secret")
+    monkeypatch.setenv("LLM_PROVIDER", "claude_code")
+    probe = (
+        "import os, sys\n"
+        "leaked = [k for k in ('SLACK_BOT_TOKEN', 'LLM_PROVIDER') if k in os.environ]\n"
+        "ok = not leaked and os.environ.get('NO_COLOR') == '1'\n"
+        "ok = ok and os.environ.get('PYTHONDONTWRITEBYTECODE') == '1' and 'PATH' in os.environ\n"
+        "sys.exit(0 if ok else 1)\n"
+    )
+    monkeypatch.setattr(
+        ProjectExecutionTools, "COMMANDS", {"run_tests": (sys.executable, "-c", probe)}
+    )
+    (tmp_path / "proj").mkdir()
+
+    result = ProjectExecutionTools(tmp_path / "proj", []).run_check("run_tests")
+
+    assert result.success, result.output
+
+
+def test_real_pytest_check_has_no_color_codes_and_leaves_no_bytecode_behind(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "pyproject.toml").write_text('[tool.pytest.ini_options]\naddopts = "--color=yes"\n')
+    (project / "tests").mkdir()
+    (project / "tests" / "test_fail.py").write_text("def test_fail():\n    assert 1 == 2\n")
+    (project / "mod.py").write_text("X = 1\n")
+    (project / "tests" / "test_import.py").write_text(
+        "import mod\n\n\ndef test_x():\n    assert mod.X\n"
+    )
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", "tests")
+
+    result = ProjectExecutionTools(project, []).run_check("run_tests")
+
+    assert not result.success
+    assert "\x1b[" not in result.output
+    assert _git(project, "status", "--porcelain", "-uall") == ""

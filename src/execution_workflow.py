@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -451,6 +452,17 @@ class ExecutionResult:
     rollback_warning: str | None = None
 
 
+# The checks run the project's own code, so they get only what a plain run needs: none of
+# the bot's settings or secrets, no color codes in the Slack text, and no bytecode or caches
+# written into the worktree (they would show up as untracked files in the post-run review).
+_VERIFICATION_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR")
+
+
+def _verification_env() -> dict[str, str]:
+    env = {key: os.environ[key] for key in _VERIFICATION_ENV_KEYS if key in os.environ}
+    return {**env, "NO_COLOR": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+
+
 class ProjectExecutionTools:
     """Restricted filesystem and verification tools used after confirmation only."""
 
@@ -458,7 +470,7 @@ class ProjectExecutionTools:
         # Use the interpreter running the bot so verification is bound to its
         # virtual environment and does not depend on a separately installed
         # ``uv`` binary being present on PATH.
-        "run_tests": (sys.executable, "-m", "pytest"),
+        "run_tests": (sys.executable, "-m", "pytest", "--color=no", "-p", "no:cacheprovider"),
         "run_lint": (sys.executable, "-m", "ruff", "check", "src", "tests"),
         "run_typecheck": (sys.executable, "-m", "mypy"),
     }
@@ -541,6 +553,7 @@ class ProjectExecutionTools:
         completed = subprocess.run(
             command,
             cwd=self.root,
+            env=_verification_env(),
             capture_output=True,
             text=True,
             timeout=120,
