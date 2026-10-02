@@ -6,6 +6,7 @@ Needs the optional `claude` extra (`claude-agent-sdk`).
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from collections.abc import AsyncIterator, Callable, Iterable
 from pathlib import Path
 
@@ -46,6 +47,12 @@ class ClaudeSdkRunner:
             prompt, read_only_options(cwd=cwd, max_turns=max_turns), timeout_seconds
         )
 
+    def complete(self, prompt: str, *, timeout_seconds: float) -> str:
+        """Answer from the prompt alone: no tools, one turn, an empty scratch directory."""
+        with tempfile.TemporaryDirectory() as scratch:
+            options = text_only_options(cwd=Path(scratch))
+            return self._execute(prompt, options, timeout_seconds).text
+
     def _execute(
         self, prompt: str, options: ClaudeAgentOptions, timeout_seconds: float
     ) -> RunnerResult:
@@ -77,6 +84,17 @@ def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
         cwd=cwd,
         max_turns=max_turns,
         # `[]` is SDK isolation mode: no `~/.claude` settings, hooks or CLAUDE.md leak in.
+        setting_sources=[],
+        permission_mode="dontAsk",
+    )
+
+
+def text_only_options(*, cwd: Path) -> ClaudeAgentOptions:
+    return ClaudeAgentOptions(
+        tools=[],
+        allowed_tools=[],
+        cwd=cwd,
+        max_turns=1,
         setting_sources=[],
         permission_mode="dontAsk",
     )

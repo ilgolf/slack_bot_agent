@@ -212,3 +212,21 @@ def test_run_converts_sdk_exceptions_into_runner_error_without_the_original_mess
 
     assert "sk-secret" not in str(exc_info.value)
     assert exc_info.value.__suppress_context__
+
+
+def test_complete_runs_read_only_without_network_in_an_empty_directory() -> None:
+    thread = FakeThread(events=[_agent_message_event("요약")])
+    started: list[ThreadOptions] = []
+    listing: list[list[str]] = []
+
+    def start_thread(options: ThreadOptions) -> FakeThread:
+        started.append(options)
+        listing.append([p.name for p in Path(str(options.working_directory)).iterdir()])
+        return thread
+
+    text = CodexSdkRunner(start_thread=start_thread).complete("요약해", timeout_seconds=30.0)
+
+    assert text == "요약"
+    assert started[0].sandbox_mode == "read-only"
+    assert started[0].network_access_enabled is False
+    assert listing == [[]]

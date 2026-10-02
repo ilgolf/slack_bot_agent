@@ -9,6 +9,7 @@ from src.config import get_settings
 from src.observability import RequestContextFilter
 from src.slack_app import start_socket_mode
 from src.thread_context import ThreadContextStore
+from src.thread_summarizer import get_thread_summarizer
 
 
 def configure_logging(log_level: str) -> None:
@@ -47,6 +48,7 @@ def main() -> None:
         settings,
         thread_context=ThreadContextStore(root=settings.thread_context_root),
         agent=get_agent(settings.llm_provider, settings=settings),
+        thread_summarizer=get_thread_summarizer(settings.llm_provider, settings=settings),
     )
 
 

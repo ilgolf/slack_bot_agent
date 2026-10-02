@@ -23,6 +23,7 @@ class RequestIntent(StrEnum):
     LINEAR_READ = "linear_read"
     LINEAR_MUTATION = "linear_mutation"
     PROJECT_ANALYSIS = "project_analysis"
+    THREAD_SUMMARY = "thread_summary"
     SYSTEM_INQUIRY = "system_inquiry"
     AMBIGUOUS = "ambiguous"
 
@@ -39,6 +40,10 @@ class RoutedRequest:
 _MENTION = re.compile(r"<@[^>]+>")
 _CONFIRM = re.compile(r"^(실행|실행해줘|실행합니다|저장|저장해줘|저장합니다)$")
 _CANCEL = re.compile(r"^(취소|취소해줘|취소합니다)$")
+# A thread summary written to a file stays an artifact request.
+_FILE_OUTPUT_MARKERS = ("만들", "생성", "파일", "저장", "create", "write")
+# Asking about the feature is a question, not a request to run it.
+_FEATURE_QUESTION_MARKERS = ("기능", "가능", "지원", "어떻게", "방법")
 _ARTIFACT_MARKERS = ("생성", "만들", "정리", "create", "write", "저장 위치")
 _LINEAR_CREATE = ("이슈 생성", "티켓 생성", "이슈 추가", "티켓 추가", "이슈 만들", "티켓 만들")
 _LINEAR_UPDATE = ("이슈 수정", "티켓 수정", "이슈 변경", "티켓 변경", "이슈 업데이트")
@@ -94,6 +99,13 @@ class RequestRouter:
             )
         if _CANCEL.fullmatch(command):
             return RoutedRequest(RequestIntent.CONTROL_CANCEL, command, project_name, "취소")
+
+        if (
+            _is_thread_summary_line(command_line)
+            and not any(marker in command_line for marker in _FILE_OUTPUT_MARKERS)
+            and not any(marker in command_line for marker in _FEATURE_QUESTION_MARKERS)
+        ):
+            return RoutedRequest(RequestIntent.THREAD_SUMMARY, command, project_name)
 
         # The first line carries the command; later lines can be ticket fields
         # whose title or description happen to contain code-work vocabulary.
@@ -161,6 +173,10 @@ class RequestRouter:
         except Exception:
             # An unavailable classifier must never break routing.
             return False
+
+
+def _is_thread_summary_line(command_line: str) -> bool:
+    return ("스레드" in command_line and "요약" in command_line) or "thread summary" in command_line
 
 
 def _starts_with_linear_command(command_line: str, markers: tuple[str, ...]) -> bool:

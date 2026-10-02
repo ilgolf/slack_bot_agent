@@ -155,3 +155,24 @@ def test_run_raises_runner_error_when_the_result_message_reports_an_error(
 
     with pytest.raises(RunnerError):
         runner.run("분석해", cwd=tmp_path, timeout_seconds=30.0, max_turns=5)
+
+
+def test_complete_runs_without_tools_in_an_empty_isolated_directory() -> None:
+    captured: list[ClaudeAgentOptions] = []
+    listing: list[list[str]] = []
+
+    async def fake_query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        captured.append(options)
+        listing.append([p.name for p in Path(str(options.cwd)).iterdir()])
+        yield _result_message("요약")
+
+    text = ClaudeSdkRunner(query=fake_query).complete("요약해", timeout_seconds=30.0)
+
+    options = captured[0]
+    assert text == "요약"
+    assert options.tools == []
+    assert options.allowed_tools == []
+    assert options.max_turns == 1
+    assert options.setting_sources == []
+    assert options.permission_mode == "dontAsk"
+    assert listing == [[]]

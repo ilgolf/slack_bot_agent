@@ -233,3 +233,34 @@ def test_plan_autopilot_request_is_code_work() -> None:
     routed = RequestRouter().route("@Goodra-bot my-project plan.md 기준으로 끝까지 진행해")
 
     assert routed.intent is RequestIntent.CODE_WORK
+
+
+def test_thread_summary_request_is_thread_summary() -> None:
+    routed = RequestRouter().route("<@U123> 이 스레드 요약해줘")
+
+    assert routed.intent is RequestIntent.THREAD_SUMMARY
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "thread summary",
+        "<@U123> 스레드 정리해서 요약해줘",
+        "이 스레드 요약해줘 (코드 리뷰 내용 위주로)",
+    ],
+)
+def test_thread_summary_variants_are_thread_summary(text: str) -> None:
+    assert RequestRouter().route(text).intent is RequestIntent.THREAD_SUMMARY
+
+
+@pytest.mark.parametrize("text", ["README 요약해줘", "프로젝트 분석해줘"])
+def test_non_thread_requests_keep_their_existing_intent(text: str) -> None:
+    assert RequestRouter().route(text).intent is RequestIntent.PROJECT_ANALYSIS
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["스레드 요약 기능 지원돼?", "스레드 요약은 어떻게 동작해?", "thread summary 가능해?"],
+)
+def test_questions_about_thread_summary_are_not_executed_as_summaries(text: str) -> None:
+    assert RequestRouter().route(text).intent is not RequestIntent.THREAD_SUMMARY

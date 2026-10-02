@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import tempfile
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Protocol
@@ -77,6 +78,14 @@ class CodexSdkRunner:
         return RunnerResult(
             text=_last_agent_message(events), files_read=files_read_from(events, cwd=cwd)
         )
+
+    def complete(self, prompt: str, *, timeout_seconds: float) -> str:
+        """Answer from the prompt alone. Codex cannot switch tools off, so it runs
+        read-only, offline, in an empty scratch directory with nothing to read."""
+        with tempfile.TemporaryDirectory() as scratch:
+            return self.run(
+                prompt, cwd=Path(scratch), timeout_seconds=timeout_seconds, max_turns=1
+            ).text
 
     @staticmethod
     async def _collect(thread: ThreadLike, prompt: str) -> list[ThreadEvent]:
