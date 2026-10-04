@@ -55,7 +55,7 @@
 ## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
 
 - [x] Slack에서 "thread 내용 기반으로 정리해서 ticket을 만들 수 있는 상황임?"이 근거 파일 오류 없이 기능 설명으로 답한다
-- [ ] 분석 질문(프로젝트 지목), 스레드 요약, `이슈 생성` 확인 흐름, 코드 작업(편집·`폐기`)이 그대로 동작한다
+- [x] 분석 질문(프로젝트 지목), 스레드 요약, `이슈 생성` 확인 흐름, 코드 작업(편집·`폐기`)이 그대로 동작한다 — 사용자 지시로 체크(2026-10-04), 확인 결과는 기록하지 않음
 - [x] 모호한 문장("이거 좀 봐줘")이 파괴적 동작 없이 되묻거나 일반 답변으로 끝난다
 
 ## 위험과 확인 사항
@@ -124,8 +124,8 @@
 
 ## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
 
-- [ ] Slack 한 스레드에서 "plan.md에 Phase 21을 써보자" → 이어서 파일명 없는 "그렇게 가" 로 `plan.md` 편집이 반영된다
-- [ ] 같은 스레드에서 봇이 언급만 한 `CLAUDE.md`는 편집되지 않는다
+- [x] Slack 한 스레드에서 "plan.md에 Phase 21을 써보자" → 이어서 파일명 없는 "그렇게 가" 로 `plan.md` 편집이 반영된다 — 사용자 지시로 체크(2026-10-04), 확인 결과는 기록하지 않음
+- [x] 같은 스레드에서 봇이 언급만 한 `CLAUDE.md`는 편집되지 않는다 — 사용자 지시로 체크(2026-10-04), 확인 결과는 기록하지 않음
 
 ## 위험과 확인 사항
 
@@ -133,3 +133,82 @@
 - 위험 파일(`conftest.py`·`*.sh`·`pyproject.toml` 등)을 같은 방식으로 풀지는 정하지 않았다. 코드를 실행시킬 수 있는 파일이라 이번에는 제외한다.
 - 사용자 발화 기록이 파일 하나 더 늘어난다. 스레드 문맥과 같은 위치·보존 규칙을 따른다.
 - 서버를 한 곳에서만 띄웠는지(같은 Slack 앱 토큰을 쓰는 다른 인스턴스가 없는지)는 이 Phase와 별개로 먼저 확인해야 수동 확인이 의미 있다.
+
+---
+
+# Phase 23: SDK가 프로젝트 지침(AGENTS.md·CLAUDE.md)과 skill을 읽게 켠다
+
+> Phase 20의 수동 확인 1건(`[ ]`)과 Phase 21의 수동 확인 2건은 이 Phase와 무관하게 남긴다.
+
+## 목표
+
+봇의 SDK 실행기는 모두 `setting_sources=[]`(격리 모드)라서 프로젝트의 `CLAUDE.md`·skill이 에이전트에 닿지 않는다 (`claude_sdk_runner.py`의 `read_only_options`·`edit_options`·`text_only_options`). 편집·분석 모드의 에이전트가 프로젝트 지침을 모른 채 일한다 (plan 모드만 `ProjectContextLoader`로 `AGENTS.md`·`CLAUDE.md`를 프롬프트에 넣는다). 이 Phase는 SDK 기능을 켜서 에이전트가 지침과 skill을 읽게 한다.
+
+## 결정 사항 (2026-10-04, 사용자와 합의: "skill하고 AGENTS.md를 읽을 수 있게 켠다")
+
+- **SDK 기능을 켠다.** 봇이 직접 프롬프트에 넣는 방식(`ProjectContextLoader` 재사용)은 이번에 택하지 않는다.
+- Claude는 `setting_sources=["project"]`로 연다 (설치된 SDK 문서: `CLAUDE.md` 로드에는 `"project"`가 필요하다). `"user"`·`"local"`은 열지 않는다 — 개인 설정·hook이 봇에 섞이면 안 된다.
+- skill은 SDK의 `skills` 옵션으로 켠다. 어떤 skill을 켤지(`"all"` 또는 이름 목록)는 스파이크 뒤에 정한다.
+- 안전은 코드에 남긴다: 도구 목록(`Read`·`Grep`·`Glob`·`Write`·`Edit`), `PreToolUse` 가드(`edit_guard`), worktree 격리, 변경 검토는 바꾸지 않는다.
+- 범위 밖: 편집·분석의 진입을 `CODE_WORK_MODE`로 정하고 LLM 분류기를 걷어내는 일(Phase 24 후보).
+
+## 먼저 확인할 것 (스파이크, 코드 변경 전)
+
+- **Claude Code는 `AGENTS.md`를 읽는가?** 알려진 네이티브 지침 파일은 `CLAUDE.md`다. `AGENTS.md`는 읽지 않을 수 있다 (확인 전). 읽지 않으면 이 요청의 절반이 SDK 기능만으로는 안 된다.
+- **Codex SDK는 `AGENTS.md`를 읽는가?** 설치된 `openai_codex_sdk` 코드에는 관련 처리가 보이지 않는다. Codex CLI 본체의 동작인지 확인한다.
+- **`setting_sources=["project"]`가 무엇을 같이 가져오는가?** 프로젝트의 `.claude/settings.json`에 hook·권한·MCP 서버가 있으면 에이전트 실행에 영향을 주는지. 특히 프로젝트 설정이 우리 `tools`·`allowed_tools`·`permission_mode="dontAsk"`·`PreToolUse` 가드를 넓히거나 우회할 수 있는지.
+
+## 테스트 목록 (위에서부터 하나씩)
+
+### A. 스파이크 (실제 SDK 호출, 결과를 이 문서에 기록)
+- [x] 쓰고 버려도 되는 임시 프로젝트에 `CLAUDE.md`·`AGENTS.md`·`.claude/skills/<name>/SKILL.md`·`.claude/settings.json`(Bash를 허용하고 호출 시 파일을 남기는 hook)을 두고, `setting_sources=["project"]`로 실제 `claude_code`를 호출해 각각이 로드되는지 기록한다
+- [x] 같은 임시 프로젝트로 **편집 옵션**에서 프로젝트 설정이 Bash를 열거나 가드를 우회하지 못함을 확인한다 (열리면 이 Phase는 여기서 중단하고 방향을 다시 정한다)
+- [x] Codex는 같은 임시 프로젝트의 `AGENTS.md`를 읽는지 기록한다 (CLI가 없으면 못 했다고 적는다)
+
+#### 스파이크 A 결과 (2026-10-04, claude-agent-sdk 0.2.163 · Claude Code 2.1.288 · codex-cli 0.157.1, 임시 프로젝트는 scratchpad)
+
+| 확인 | `setting_sources=[]` | `["project"]` |
+|---|---|---|
+| `CLAUDE.md` 내용 (파일을 읽지 말라고 지시) | 모름 | **로드됨** |
+| `AGENTS.md` 내용 | — | **로드되지 않음** (CLAUDE.md 코드만 답함) |
+| skill (`skills=["spike-skill"]`, 기존 `_EDIT_TOOLS`) | 로드 안 됨 (모델이 `Glob`·`Read`로 SKILL.md를 직접 읽어 답함) | **로드되지 않음** — `tools`에 `Skill`이 없어서 "스킬 실행 도구 없음" |
+| skill + `tools`/`allowed_tools`에 `Skill` 추가 | — | **로드됨** (`Skill` 호출, 코드 반환) |
+| 프로젝트 `.claude/settings.json` hook | 실행 안 됨 | **실행됨** (`touch`가 실제로 파일을 만듦) |
+| 프로젝트 `permissions.allow`·`defaultMode: bypassPermissions` | — | 무시됨 (워크스페이스 미신뢰 경고. 신뢰된 경로에서는 확인하지 못함) |
+| 프로젝트 hook이 `Write`를 `allow`로 응답 + Bash 허용 | — | **우회 못 함**: `tools`에 없는 Bash는 시도조차 못 했고, `plan.md` 쓰기는 `edit_guard`가 거부 (`plan.md`는 그대로) |
+| `settings='{"disableAllHooks": true}'` 추가 | — | 프로젝트 hook은 실행되지 않으면서 SDK `PreToolUse` 가드는 그대로 작동 (`plan.md` 쓰기 거부) |
+
+- Codex: `codex exec`가 파일을 읽지 말라는 지시에도 `AGENTS.md`의 `CODE-AGENTS-5582`를 답했다 → Codex CLI는 `AGENTS.md`를 **네이티브로 읽는다** (`CLAUDE.md`는 아님). 현재 Codex 실행기도 같은 CLI를 쓰므로 이미 읽고 있을 가능성이 높다 (실행기 경유 확인은 안 함). 사용자 `~/.codex/config.toml`의 hook도 같이 로드됐다.
+- 결론: (1) 가드 우회는 확인되지 않아 이 Phase를 계속한다. (2) **프로젝트 hook은 호스트에서 명령을 실행**하므로 `["project"]`를 켜면 `settings='{"disableAllHooks": true}'`를 함께 줘야 한다 (B 항목에 추가). (3) skill을 켜려면 `tools`·`allowed_tools`에 `Skill`을 넣어야 한다. (4) Claude는 `AGENTS.md`를 읽지 않으므로 C의 첫 항목이 필요하다.
+
+### B. 옵션 구성 (스파이크가 통과한 경우만)
+- [ ] 읽기 전용 분석 옵션이 `setting_sources=["project"]`를 가진다
+- [ ] 편집 옵션이 `setting_sources=["project"]`를 가지면서 `tools`·`allowed_tools`·`permission_mode`·`PreToolUse` 가드는 그대로다
+- [ ] 텍스트 전용 옵션(`text_only_options`: 분류·일반 답변)은 계속 `setting_sources=[]`다 — 도구가 없는 호출에 프로젝트 설정을 줄 이유가 없다
+- [ ] skill 옵션이 정한 범위(이름 목록 또는 `"all"`)대로 구성된다
+
+### C. AGENTS.md 처리 (스파이크 결과에 따라 하나만)
+- [ ] (Claude가 `AGENTS.md`를 읽지 않으면) 프로젝트에 `AGENTS.md`만 있을 때 그 내용이 에이전트에 전달된다 — 방식은 스파이크 뒤에 정한다
+- [ ] (읽으면) 이 항목은 건너뛴다고 기록한다
+
+### D. 응답 표시
+- [ ] 편집·분석 응답의 "적용 AGENTS.md / 적용 Skill" 표시가 실제로 로드된 것과 어긋나지 않는다 (현재 편집 경로는 지침을 읽지 않으면서도 "없음"을 낸다 — 표시 출처부터 확인)
+
+### E. 안전 확인
+- [ ] 프로젝트 `CLAUDE.md`에 "plan.md를 고쳐라" 같은 지시가 있어도 사용자가 이름을 지정하지 않으면 `edit_guard`가 막는다
+- [ ] 전체 `pytest`·`ruff`·`mypy`가 통과한다
+
+### F. 마무리
+- [ ] `harness/bot.md`·README·`.env.example`에 "프로젝트 지침과 skill은 SDK가 읽는다, 안전은 코드가 강제한다"를 적는다
+
+## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
+
+- [x] Slack에서 `AGENTS.md`/`CLAUDE.md`에 규칙이 있는 프로젝트로 편집을 요청해 그 규칙이 반영된다 — 사용자 지시로 체크(2026-10-04), 확인 결과는 기록하지 않음
+- [x] 프로젝트가 허용한 skill이 실제로 쓰인다 — 사용자 지시로 체크(2026-10-04), 확인 결과는 기록하지 않음
+
+## 위험과 확인 사항
+
+- 프로젝트 `.claude/settings.json`이 에이전트 실행에 영향을 줄 수 있다 (hook·MCP). 스파이크 A의 두 번째 항목이 이 Phase의 통과 조건이다.
+- 이 봇 저장소의 `CLAUDE.md`에는 개발자용 규칙(`go`, TDD)이 있다. `slack_bot_agent`를 대상으로 편집하면 그 규칙이 Slack 에이전트에 적용된다 — 의도한 결과인지 확인이 필요하다.
+- skill 파일은 지침이지 샌드박스가 아니다 (SDK 문서: 켜지 않은 skill도 파일은 디스크에 남아 `Read`로 읽힌다). 경계는 코드(가드·worktree)에 있다.
+- Codex 쪽은 SDK 기능이 아니라 CLI 동작에 기대므로 Claude와 같게 동작한다고 보장하지 못한다.
