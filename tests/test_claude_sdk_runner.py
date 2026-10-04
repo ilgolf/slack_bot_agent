@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 
@@ -33,10 +34,13 @@ def test_options_limit_available_tools_to_read_only_tools() -> None:
     assert not _MUTATING_TOOLS & set(options.allowed_tools)
 
 
-def test_options_do_not_load_user_or_project_settings() -> None:
+def test_options_load_only_project_guidance_and_never_project_hooks() -> None:
     options = read_only_options(cwd=Path("/work/project"), max_turns=7)
 
-    assert options.setting_sources == []
+    # "project" brings CLAUDE.md; a project's own hooks run shell commands on the
+    # host, so they are switched off while the SDK's PreToolUse guard stays.
+    assert options.setting_sources == ["project"]
+    assert json.loads(options.settings or "{}") == {"disableAllHooks": True}
 
 
 def test_options_deny_tools_outside_the_allow_list_without_prompting() -> None:

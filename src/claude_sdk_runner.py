@@ -6,9 +6,11 @@ Needs the optional `claude` extra (`claude-agent-sdk`).
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Literal
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -120,6 +122,13 @@ def _pre_tool_use_guard(
     return HookMatcher(matcher="|".join(tools), hooks=[guard])
 
 
+# Project guidance (CLAUDE.md) is read from "project" only: never "user"/"local", so
+# personal settings stay out. Project hooks run shell commands on the host, which no
+# tool guard can see, so they are switched off; the SDK's own PreToolUse guard stays.
+_PROJECT_SETTING_SOURCES: tuple[Literal["project"]] = ("project",)
+_NO_PROJECT_HOOKS = json.dumps({"disableAllHooks": True})
+
+
 def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
     """`tools` removes every other built-in tool from the model's context; the same
     list in `allowed_tools` only pre-approves these so no prompt blocks a headless run."""
@@ -129,8 +138,8 @@ def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
         allowed_tools=list(_READ_ONLY_TOOLS),
         cwd=cwd,
         max_turns=max_turns,
-        # `[]` is SDK isolation mode: no `~/.claude` settings, hooks or CLAUDE.md leak in.
-        setting_sources=[],
+        setting_sources=list(_PROJECT_SETTING_SOURCES),
+        settings=_NO_PROJECT_HOOKS,
         permission_mode="dontAsk",
         hooks={
             "PreToolUse": [

@@ -182,8 +182,8 @@
 - 결론: (1) 가드 우회는 확인되지 않아 이 Phase를 계속한다. (2) **프로젝트 hook은 호스트에서 명령을 실행**하므로 `["project"]`를 켜면 `settings='{"disableAllHooks": true}'`를 함께 줘야 한다 (B 항목에 추가). (3) skill을 켜려면 `tools`·`allowed_tools`에 `Skill`을 넣어야 한다. (4) Claude는 `AGENTS.md`를 읽지 않으므로 C의 첫 항목이 필요하다.
 
 ### B. 옵션 구성 (스파이크가 통과한 경우만)
-- [ ] 읽기 전용 분석 옵션이 `setting_sources=["project"]`를 가진다
-- [ ] 편집 옵션이 `setting_sources=["project"]`를 가지면서 `tools`·`allowed_tools`·`permission_mode`·`PreToolUse` 가드는 그대로다
+- [x] 읽기 전용 분석 옵션이 `setting_sources=["project"]`를 가지고 `settings='{"disableAllHooks": true}'`로 프로젝트 hook을 끈다 (스파이크 결과)
+- [ ] 편집 옵션이 `setting_sources=["project"]`와 `disableAllHooks` 설정을 가지면서 `tools`·`allowed_tools`·`permission_mode`·`PreToolUse` 가드는 그대로다
 - [ ] 텍스트 전용 옵션(`text_only_options`: 분류·일반 답변)은 계속 `setting_sources=[]`다 — 도구가 없는 호출에 프로젝트 설정을 줄 이유가 없다
 - [ ] skill 옵션이 정한 범위(이름 목록 또는 `"all"`)대로 구성된다
 
