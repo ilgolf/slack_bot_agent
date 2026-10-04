@@ -52,6 +52,7 @@ class RequestCoordinator:
             )
         # One owner appends both messages. Workflows deliberately remain
         # context-free, so Slack and /debug/command cannot diverge.
+        thread_context.append_user_message(channel_id, thread_ts, text)
         thread_context.append(channel_id, thread_ts, text)
         thread_context.append(channel_id, thread_ts, response)
         return routed, response

@@ -6,6 +6,7 @@ without re-fetching the thread from Slack every time (see plan.md's design summa
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,3 +39,21 @@ class ThreadContextStore:
         if not path.is_file():
             return ""
         return path.read_text(encoding="utf-8")
+
+    def _user_path(self, channel_id: str, thread_ts: str) -> Path:
+        return self.root / channel_id / f"{thread_ts}.user.jsonl"
+
+    def append_user_message(self, channel_id: str, thread_ts: str, message: str) -> None:
+        """Record a message the user wrote, apart from the context text that also holds
+        bot replies and data the bot read."""
+        path = self._user_path(channel_id, thread_ts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(message, ensure_ascii=False) + "\n")
+
+    def user_messages(self, channel_id: str, thread_ts: str) -> list[str]:
+        path = self._user_path(channel_id, thread_ts)
+        if not path.is_file():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [json.loads(line) for line in lines if line.strip()]
