@@ -3513,3 +3513,107 @@ def test_real_pytest_check_has_no_color_codes_and_leaves_no_bytecode_behind(
     assert not result.success
     assert "\x1b[" not in result.output
     assert _git(project, "status", "--porcelain", "-uall") == ""
+
+
+# --- Phase 21, B: protected files the user named earlier in the thread ----------------
+
+
+def _named_paths_for_follow_up(
+    tmp_path: Path,
+    *,
+    prior_user: list[str],
+    prior_context: list[str] | None = None,
+    prior_thread: str = "1.1",
+    text: str = "my-project 그대로 진행해줘",
+) -> frozenset[str]:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+    for message in prior_user:
+        context.append_user_message("C1", prior_thread, message)
+        context.append("C1", prior_thread, message)
+    for message in prior_context or []:
+        context.append("C1", prior_thread, message)
+    agent = EditAgent(_write("README.md", "after\n"))
+
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text=text,
+        thread_context=context,
+        agent=agent,
+        trusted_code_work=True,
+    )
+
+    return agent.calls[0][2]
+
+
+def test_protected_file_the_user_named_earlier_in_the_thread_stays_editable(
+    tmp_path: Path,
+) -> None:
+    named = _named_paths_for_follow_up(tmp_path, prior_user=["my-project plan.md 수정해줘"])
+
+    assert named == frozenset({"plan.md"})
+
+
+def test_protected_file_only_a_bot_reply_mentioned_is_not_editable(tmp_path: Path) -> None:
+    named = _named_paths_for_follow_up(
+        tmp_path,
+        prior_user=["my-project 분석해줘"],
+        prior_context=["my-project의 plan.md를 보세요"],
+    )
+
+    assert named == frozenset()
+
+
+def test_protected_file_named_in_another_thread_is_not_editable(tmp_path: Path) -> None:
+    named = _named_paths_for_follow_up(
+        tmp_path, prior_user=["my-project plan.md 수정해줘"], prior_thread="9.9"
+    )
+
+    assert named == frozenset()
+
+
+def test_plan_follow_request_does_not_make_an_earlier_named_plan_editable(
+    tmp_path: Path,
+) -> None:
+    named = _named_paths_for_follow_up(
+        tmp_path,
+        prior_user=["my-project plan.md 수정해줘"],
+        text="my-project plan.md 대로 구현해줘",
+    )
+
+    assert "plan.md" not in named
+
+
+def test_earlier_named_file_that_is_not_protected_does_not_change_the_named_paths(
+    tmp_path: Path,
+) -> None:
+    named = _named_paths_for_follow_up(
+        tmp_path, prior_user=["my-project src/app.py 와 conftest.py 수정해줘"]
+    )
+
+    assert named == frozenset()
+
+
+def test_blanking_a_file_named_earlier_in_the_thread_is_still_rejected(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    (project / "plan.md").write_text("# existing plan\n")
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", "plan")
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    context.append_user_message("C1", "1.1", "my-project plan.md 수정해줘")
+    context.append("C1", "1.1", "my-project plan.md 수정해줘")
+    agent = EditAgent(_write("plan.md", ""))
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project 그대로 진행해줘",
+        thread_context=context,
+        agent=agent,
+        trusted_code_work=True,
+    )
+
+    assert response is not None and "안전 검사를 통과하지 못했습니다" in response
+    assert workspaces.existing("my-project", "C1", "1.1") is None
+    assert (project / "plan.md").read_text() == "# existing plan\n"

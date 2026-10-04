@@ -583,6 +583,25 @@ def _edit_named_paths(command_text: str) -> list[str]:
     return list(dict.fromkeys(named))
 
 
+def _edit_named_paths_in_thread(
+    command_text: str, earlier_user_messages: Sequence[str]
+) -> list[str]:
+    """`_edit_named_paths` plus the management files (`plan.md`, ...) the user themself named
+    in earlier messages of this thread, so a follow-up without a file name keeps them
+    editable. Only the user's own words count — never bot replies or data the bot read —
+    and a plan-follow request keeps `plan.md` read-only whatever was said before."""
+    named = _edit_named_paths(command_text)
+    if _is_plan_follow_request(command_text):
+        return named
+    earlier = [
+        path
+        for message in earlier_user_messages
+        for path in _edit_named_paths(message)
+        if is_protected_meta_path(path)
+    ]
+    return list(dict.fromkeys([*named, *earlier]))
+
+
 def _is_guarded_path(path: str) -> bool:
     return is_protected_meta_path(path) or is_risky_path(path) or is_secret_path(path)
 
@@ -724,7 +743,14 @@ class ExecutionWorkflow:
         edit_root = None if autopilot else self._direct_edit_root(agent, project_name)
         if edit_root is not None:
             return self._edit_directly(
-                edit_root, project_name, channel_id, thread_ts, command_text, contextual_text, agent
+                edit_root,
+                project_name,
+                channel_id,
+                thread_ts,
+                command_text,
+                contextual_text,
+                agent,
+                thread_context.user_messages(channel_id, thread_ts),
             )
         creator = getattr(agent, "create_execution_plan", None)
         if not callable(creator):
@@ -1100,13 +1126,14 @@ class ExecutionWorkflow:
         command_text: str,
         contextual_text: str,
         agent: object,
+        earlier_user_messages: Sequence[str] = (),
     ) -> str:
         from src.code_plan_prompts import build_edit_prompt, build_edit_repair_prompt
 
         assert self.workspaces is not None
         workspaces = self.workspaces
         edit = getattr(agent, "edit_code")  # noqa: B009 - checked by _direct_edit_root
-        named = frozenset(_edit_named_paths(command_text))
+        named = frozenset(_edit_named_paths_in_thread(command_text, earlier_user_messages))
         self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IMPLEMENTING)
         try:
             worktree = workspaces.ensure(root, project_name, channel_id, thread_ts)
