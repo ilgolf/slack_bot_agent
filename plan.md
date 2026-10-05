@@ -184,7 +184,7 @@
 ### B. 옵션 구성 (스파이크가 통과한 경우만)
 - [x] 읽기 전용 분석 옵션이 `setting_sources=["project"]`를 가지고 `settings='{"disableAllHooks": true}'`로 프로젝트 hook을 끈다 (스파이크 결과)
 - [x] 편집 옵션이 `setting_sources=["project"]`와 `disableAllHooks` 설정을 가지면서 `tools`·`allowed_tools`·`permission_mode`·`PreToolUse` 가드는 그대로다
-- [ ] 텍스트 전용 옵션(`text_only_options`: 분류·일반 답변)은 계속 `setting_sources=[]`다 — 도구가 없는 호출에 프로젝트 설정을 줄 이유가 없다
+- [x] 텍스트 전용 옵션(`text_only_options`: 분류·일반 답변)은 계속 `setting_sources=[]`다 — 도구가 없는 호출에 프로젝트 설정을 줄 이유가 없다
 - [ ] skill 옵션이 정한 범위(이름 목록 또는 `"all"`)대로 구성된다
 
 ### C. AGENTS.md 처리 (스파이크 결과에 따라 하나만)

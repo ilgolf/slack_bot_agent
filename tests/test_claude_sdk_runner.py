@@ -20,7 +20,13 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from src.claude_sdk_runner import ClaudeSdkRunner, edit_options, files_read_from, read_only_options
+from src.claude_sdk_runner import (
+    ClaudeSdkRunner,
+    edit_options,
+    files_read_from,
+    read_only_options,
+    text_only_options,
+)
 from src.code_agent_analysis import RunnerError, RunnerTimeout
 
 _MUTATING_TOOLS = {"Edit", "Write", "Bash", "NotebookEdit"}
@@ -212,6 +218,14 @@ def test_edit_options_expose_exactly_the_read_and_edit_tools_and_no_shell(tmp_pa
     assert not {"Bash", "NotebookEdit", "WebFetch", "Task"} & set(options.tools or [])
     assert options.permission_mode == "dontAsk"
     assert "PreToolUse" in (options.hooks or {})
+
+
+def test_text_only_options_stay_isolated_from_project_settings() -> None:
+    options = text_only_options(cwd=Path("/work/project"))
+
+    assert options.setting_sources == []
+    assert options.settings is None
+    assert options.tools == []
 
 
 def test_edit_options_load_project_guidance_without_widening_the_guard(tmp_path: Path) -> None:
