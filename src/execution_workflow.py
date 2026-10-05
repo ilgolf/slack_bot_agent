@@ -57,6 +57,7 @@ from src.project_resolver import (
 from src.request_classifier import classify_request, find_project_name_candidates
 from src.request_router import RequestIntent, RequestRouter
 from src.run_state import CodeWorkState, CodeWorkStateStore
+from src.skill_allowlist import project_allowlist
 from src.thread_context import ThreadContextStore
 from src.thread_workspace import ThreadWorkspaces, WorkspaceError
 
@@ -198,7 +199,7 @@ class SkillRegistry:
         }
 
     def select(self, *, intent: str, project_root: Path) -> list[AppliedSkill]:
-        allowed_names = self._project_allowlist(project_root)
+        allowed_names = project_allowlist(project_root)
         desired_names = _skills_for_intent(intent)
         skills: list[AppliedSkill] = []
         for name in desired_names:
@@ -228,20 +229,6 @@ class SkillRegistry:
         if not resolved.is_relative_to(project_root.resolve()):
             return None
         return _load_skill(f"claude:{name}", resolved)
-
-    @staticmethod
-    def _project_allowlist(project_root: Path) -> set[str]:
-        allowlist = project_root / ".piplup" / "allowed-skills.txt"
-        if not allowlist.is_file() or allowlist.is_symlink():
-            return set()
-        resolved = allowlist.resolve()
-        if not resolved.is_relative_to(project_root.resolve()):
-            return set()
-        return {
-            line.strip()
-            for line in allowlist.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        }
 
     def _find_skill(self, name: str) -> Path | None:
         for root in self.trusted_roots.values():
