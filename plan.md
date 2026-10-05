@@ -185,7 +185,8 @@
 - [x] 읽기 전용 분석 옵션이 `setting_sources=["project"]`를 가지고 `settings='{"disableAllHooks": true}'`로 프로젝트 hook을 끈다 (스파이크 결과)
 - [x] 편집 옵션이 `setting_sources=["project"]`와 `disableAllHooks` 설정을 가지면서 `tools`·`allowed_tools`·`permission_mode`·`PreToolUse` 가드는 그대로다
 - [x] 텍스트 전용 옵션(`text_only_options`: 분류·일반 답변)은 계속 `setting_sources=[]`다 — 도구가 없는 호출에 프로젝트 설정을 줄 이유가 없다
-- [ ] skill 옵션이 정한 범위(이름 목록 또는 `"all"`)대로 구성된다
+- [x] skill 옵션이 이름 목록으로만 구성된다: 목록이 있으면 `skills=[...]`와 `Skill` 도구를 넣고, 없으면 `skills=[]`(목록 비움)이고 `Skill` 도구가 없다 (범위 결정: `"all"`이 아니라 허용한 이름만 — plan 모드의 `.piplup/allowed-skills.txt`를 재사용)
+- [ ] 실행기가 `cwd`의 `.piplup/allowed-skills.txt`에서 `claude:<이름>` 항목을 읽어 옵션의 `skills`로 넘긴다 (허용 목록이 없거나 symlink면 빈 목록)
 
 ### C. AGENTS.md 처리 (스파이크 결과에 따라 하나만)
 - [ ] (Claude가 `AGENTS.md`를 읽지 않으면) 프로젝트에 `AGENTS.md`만 있을 때 그 내용이 에이전트에 전달된다 — 방식은 스파이크 뒤에 정한다

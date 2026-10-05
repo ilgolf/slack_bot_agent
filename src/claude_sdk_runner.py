@@ -129,13 +129,23 @@ _PROJECT_SETTING_SOURCES: tuple[Literal["project"]] = ("project",)
 _NO_PROJECT_HOOKS = json.dumps({"disableAllHooks": True})
 
 
-def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
+def _with_skill_tool(tools: Sequence[str], skills: Sequence[str]) -> list[str]:
+    """The `Skill` tool exists only when a skill is enabled: without it in `tools` the
+    SDK lists skills the model cannot invoke (spike A)."""
+    return [*tools, "Skill"] if skills else list(tools)
+
+
+def read_only_options(
+    *, cwd: Path, max_turns: int, skills: Sequence[str] = ()
+) -> ClaudeAgentOptions:
     """`tools` removes every other built-in tool from the model's context; the same
     list in `allowed_tools` only pre-approves these so no prompt blocks a headless run."""
     project_root = Path(cwd)
+    tools = _with_skill_tool(_READ_ONLY_TOOLS, skills)
     return ClaudeAgentOptions(
-        tools=list(_READ_ONLY_TOOLS),
-        allowed_tools=list(_READ_ONLY_TOOLS),
+        tools=tools,
+        allowed_tools=tools,
+        skills=list(skills),
         cwd=cwd,
         max_turns=max_turns,
         setting_sources=list(_PROJECT_SETTING_SOURCES),
@@ -159,13 +169,16 @@ def edit_options(
     max_turns: int,
     max_budget_usd: float,
     named_paths: frozenset[str] = frozenset(),
+    skills: Sequence[str] = (),
 ) -> ClaudeAgentOptions:
     """Edit mode: file tools only (no shell), every call judged by `edit_guard` before it
     runs. `cwd` must be the thread worktree, never the original checkout."""
     worktree = Path(cwd)
+    tools = _with_skill_tool(_EDIT_TOOLS, skills)
     return ClaudeAgentOptions(
-        tools=list(_EDIT_TOOLS),
-        allowed_tools=list(_EDIT_TOOLS),
+        tools=tools,
+        allowed_tools=tools,
+        skills=list(skills),
         cwd=cwd,
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,

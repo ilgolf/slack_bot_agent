@@ -220,6 +220,33 @@ def test_edit_options_expose_exactly_the_read_and_edit_tools_and_no_shell(tmp_pa
     assert "PreToolUse" in (options.hooks or {})
 
 
+def test_skills_are_enabled_by_name_only_and_add_nothing_else_to_the_tools(
+    tmp_path: Path,
+) -> None:
+    read_only = read_only_options(cwd=tmp_path, max_turns=7, skills=("spike-skill",))
+    edit = edit_options(cwd=tmp_path, max_turns=40, max_budget_usd=3.0, skills=("spike-skill",))
+
+    assert read_only.skills == ["spike-skill"]
+    assert read_only.tools == ["Read", "Grep", "Glob", "Skill"]
+    assert read_only.allowed_tools == ["Read", "Grep", "Glob", "Skill"]
+    assert edit.skills == ["spike-skill"]
+    assert edit.tools == [*_EDIT_TOOLS, "Skill"]
+    assert edit.allowed_tools == [*_EDIT_TOOLS, "Skill"]
+
+
+def test_without_skills_the_skill_tool_is_absent_and_the_listing_is_empty(
+    tmp_path: Path,
+) -> None:
+    read_only = read_only_options(cwd=tmp_path, max_turns=7)
+    edit = edit_options(cwd=tmp_path, max_turns=40, max_budget_usd=3.0)
+
+    # `[]` (not None) suppresses every skill; None would leave the CLI's defaults on.
+    assert read_only.skills == []
+    assert edit.skills == []
+    assert "Skill" not in (read_only.tools or [])
+    assert "Skill" not in (edit.tools or [])
+
+
 def test_text_only_options_stay_isolated_from_project_settings() -> None:
     options = text_only_options(cwd=Path("/work/project"))
 
