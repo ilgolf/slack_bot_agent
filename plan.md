@@ -189,8 +189,8 @@
 - [x] 실행기가 `cwd`의 `.piplup/allowed-skills.txt`에서 `claude:<이름>` 항목을 읽어 옵션의 `skills`로 넘긴다 (허용 목록이 없거나 symlink면 빈 목록)
 
 ### C. AGENTS.md 처리 (스파이크 결과에 따라 하나만)
-- [ ] (Claude가 `AGENTS.md`를 읽지 않으면) 프로젝트에 `AGENTS.md`만 있을 때 그 내용이 에이전트에 전달된다 — 방식은 스파이크 뒤에 정한다
-- [ ] (읽으면) 이 항목은 건너뛴다고 기록한다
+- [x] (Claude가 `AGENTS.md`를 읽지 않으면) 프로젝트에 `AGENTS.md`만 있을 때 그 내용이 에이전트에 전달된다 — 방식은 스파이크 뒤에 정한다
+- [x] (읽으면) 이 항목은 건너뛴다고 기록한다 — 해당 없음: 스파이크에서 Claude는 `AGENTS.md`를 읽지 않았다. 위 항목을 구현했다 (프로젝트 루트의 `AGENTS.md`를 프롬프트 앞에 붙임: `src/project_guidance.py`. 하위 디렉터리의 `AGENTS.md`와 `CLAUDE.md`의 `@AGENTS.md` import 중복은 다루지 않음. Codex는 CLI가 네이티브로 읽어 붙이지 않음)
 
 ### D. 응답 표시
 - [ ] 편집·분석 응답의 "적용 AGENTS.md / 적용 Skill" 표시가 실제로 로드된 것과 어긋나지 않는다 (현재 편집 경로는 지침을 읽지 않으면서도 "없음"을 낸다 — 표시 출처부터 확인)

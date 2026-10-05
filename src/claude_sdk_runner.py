@@ -28,6 +28,7 @@ from claude_agent_sdk import (
 
 from src.code_agent_analysis import RunnerError, RunnerResult, RunnerTimeout
 from src.edit_guard import is_allowed_tool_call
+from src.project_guidance import with_agents_md
 from src.read_path_guard import is_allowed_read
 from src.skill_allowlist import project_allowlist
 
@@ -54,7 +55,7 @@ class ClaudeSdkRunner:
         self, prompt: str, *, cwd: Path, timeout_seconds: float, max_turns: int
     ) -> RunnerResult:
         options = read_only_options(cwd=cwd, max_turns=max_turns, skills=_allowed_skills(cwd))
-        return self._execute(prompt, options, timeout_seconds)
+        return self._execute(with_agents_md(prompt, Path(cwd)), options, timeout_seconds)
 
     def edit(
         self,
@@ -73,7 +74,7 @@ class ClaudeSdkRunner:
             named_paths=named_paths,
             skills=_allowed_skills(cwd),
         )
-        return self._execute(prompt, options, timeout_seconds)
+        return self._execute(with_agents_md(prompt, Path(cwd)), options, timeout_seconds)
 
     def complete(self, prompt: str, *, timeout_seconds: float) -> str:
         """Answer from the prompt alone: no tools, one turn, an empty scratch directory."""

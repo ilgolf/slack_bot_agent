@@ -200,6 +200,52 @@ def test_run_enables_no_skill_when_the_project_has_no_allowlist(tmp_path: Path) 
     assert "Skill" not in (captured[0].tools or [])
 
 
+def _prompt_capturing(prompts: list[str]) -> ClaudeSdkRunner:
+    async def fake_query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        prompts.append(prompt)
+        yield _result_message("ok")
+
+    return ClaudeSdkRunner(query=fake_query)
+
+
+def test_run_and_edit_hand_the_projects_agents_md_to_claude_ahead_of_the_request(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("규칙: 커밋 전에 테스트를 돌린다", encoding="utf-8")
+    prompts: list[str] = []
+    runner = _prompt_capturing(prompts)
+
+    runner.run("분석해", cwd=tmp_path, timeout_seconds=30.0, max_turns=5)
+    runner.edit("고쳐", cwd=tmp_path, timeout_seconds=30.0, max_turns=5, max_budget_usd=1.0)
+
+    for prompt, request in zip(prompts, ["분석해", "고쳐"], strict=True):
+        assert "규칙: 커밋 전에 테스트를 돌린다" in prompt
+        assert prompt.index("규칙: 커밋") < prompt.index(request)
+
+
+def test_a_project_without_agents_md_leaves_the_prompt_unchanged(tmp_path: Path) -> None:
+    prompts: list[str] = []
+
+    _prompt_capturing(prompts).run("분석해", cwd=tmp_path, timeout_seconds=30.0, max_turns=5)
+
+    assert prompts == ["분석해"]
+
+
+def test_an_agents_md_that_points_outside_the_project_is_not_handed_over(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    secret = tmp_path / "secret.md"
+    secret.write_text("바깥 파일 내용", encoding="utf-8")
+    (project / "AGENTS.md").symlink_to(secret)
+    prompts: list[str] = []
+
+    _prompt_capturing(prompts).run("분석해", cwd=project, timeout_seconds=30.0, max_turns=5)
+
+    assert prompts == ["분석해"]
+
+
 def test_complete_runs_without_tools_in_an_empty_isolated_directory() -> None:
     captured: list[ClaudeAgentOptions] = []
     listing: list[list[str]] = []
