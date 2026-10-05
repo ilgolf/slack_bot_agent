@@ -72,6 +72,8 @@ GUARDED = [
     "CLAUDE.md",
     "AGENTS.md",
     ".claude/settings.json",
+    ".claude/skills/spike-skill/SKILL.md",
+    ".piplup/allowed-skills.txt",
     "tests/conftest.py",
     "pyproject.toml",
     ".github/workflows/ci.yml",

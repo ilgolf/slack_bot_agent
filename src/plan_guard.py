@@ -13,7 +13,7 @@ from collections.abc import Collection, Sequence
 from pathlib import Path
 
 _PROTECTED_META_BASENAMES = {"plan.md", "plan.archive.md", "claude.md", "agents.md"}
-_PROTECTED_META_PREFIXES = (".omx/", ".claude/", ".git/")
+_PROTECTED_META_PREFIXES = (".omx/", ".claude/", ".piplup/", ".git/")
 _RISKY_BASENAMES = {"conftest.py", "setup.py", "pyproject.toml", "setup.cfg", "tox.ini", "makefile"}
 _RISKY_DIRECTORIES = {".github", ".husky"}
 _RISKY_SUFFIXES = (".sh",)
