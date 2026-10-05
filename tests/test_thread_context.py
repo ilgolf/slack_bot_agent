@@ -60,3 +60,14 @@ def test_recording_a_user_message_leaves_the_context_text_unchanged(tmp_path: Pa
 
     assert store.read("C123", "168000.0001") == "hello\n"
     assert (tmp_path / "C123" / "168000.0001.md").read_text() == "hello\n"
+
+
+def test_user_messages_skip_a_line_that_cannot_be_read(tmp_path: Path) -> None:
+    store = ThreadContextStore(root=tmp_path)
+    store.append_user_message("C123", "168000.0001", "plan.md 고치자")
+    path = tmp_path / "C123" / "168000.0001.user.jsonl"
+    with path.open("a", encoding="utf-8") as f:
+        f.write('"반쯤 쓰다 끊긴')  # a write cut off before the closing quote and newline
+    store.append_user_message("C123", "168000.0001", "다음 요청")
+
+    assert store.user_messages("C123", "168000.0001") == ["plan.md 고치자", "다음 요청"]

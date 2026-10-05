@@ -48,12 +48,23 @@ class ThreadContextStore:
         bot replies and data the bot read."""
         path = self._user_path(channel_id, thread_ts)
         path.parent.mkdir(parents=True, exist_ok=True)
+        record = json.dumps(message, ensure_ascii=False) + "\n"
+        # A write cut off mid-line must not swallow the next message into the same line.
+        if path.is_file() and not path.read_bytes().endswith(b"\n"):
+            record = "\n" + record
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
+            f.write(record)
 
     def user_messages(self, channel_id: str, thread_ts: str) -> list[str]:
         path = self._user_path(channel_id, thread_ts)
         if not path.is_file():
             return []
-        lines = path.read_text(encoding="utf-8").splitlines()
-        return [json.loads(line) for line in lines if line.strip()]
+        messages: list[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, str):
+                messages.append(message)
+        return messages
