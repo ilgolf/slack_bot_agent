@@ -196,7 +196,7 @@
 - [x] 편집·분석 응답의 "적용 AGENTS.md / 적용 Skill" 표시가 실제로 로드된 것과 어긋나지 않는다 (현재 편집 경로는 지침을 읽지 않으면서도 "없음"을 낸다 — 표시 출처부터 확인) — 편집 응답만 해당: 편집 경로가 `applied_agents`·`applied_skills`를 비워 항상 "없음"을 냈다. 이제 worktree에 실제로 있는 `AGENTS.md`·`CLAUDE.md`와 허용 목록의 `claude:` skill(SKILL.md 존재)을 표시한다. 분석 응답에는 이 표시가 없다(별도 항목 없음)
 
 ### E. 안전 확인
-- [ ] 프로젝트 `CLAUDE.md`에 "plan.md를 고쳐라" 같은 지시가 있어도 사용자가 이름을 지정하지 않으면 `edit_guard`가 막는다
+- [x] 프로젝트 `CLAUDE.md`에 "plan.md를 고쳐라" 같은 지시가 있어도 사용자가 이름을 지정하지 않으면 `edit_guard`가 막는다
 - [ ] 전체 `pytest`·`ruff`·`mypy`가 통과한다
 
 - [x] 편집 에이전트가 worktree의 `.piplup/allowed-skills.txt`나 `.claude/skills/`를 고쳐 다음 실행의 skill 범위를 스스로 넓힐 수 없다 (편집은 worktree에서 일어나고 worktree는 스레드 안에서 유지되므로, `.piplup/`을 보호 경로로 막을지 허용 목록을 원본 저장소에서 읽을지 정한다) — 결정: `.piplup/`을 보호 메타 경로에 추가했다 (`.claude/`는 이미 보호). 이름을 지정하면 편집할 수 있고, 편집 중 `edit_guard`와 편집 뒤 `review_worktree`가 같은 판정을 쓴다
