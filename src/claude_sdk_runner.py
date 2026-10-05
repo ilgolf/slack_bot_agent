@@ -169,7 +169,8 @@ def edit_options(
         cwd=cwd,
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
-        setting_sources=[],
+        setting_sources=list(_PROJECT_SETTING_SOURCES),
+        settings=_NO_PROJECT_HOOKS,
         permission_mode="dontAsk",
         hooks={
             "PreToolUse": [

@@ -211,7 +211,17 @@ def test_edit_options_expose_exactly_the_read_and_edit_tools_and_no_shell(tmp_pa
     assert options.allowed_tools == _EDIT_TOOLS
     assert not {"Bash", "NotebookEdit", "WebFetch", "Task"} & set(options.tools or [])
     assert options.permission_mode == "dontAsk"
-    assert options.setting_sources == []
+    assert "PreToolUse" in (options.hooks or {})
+
+
+def test_edit_options_load_project_guidance_without_widening_the_guard(tmp_path: Path) -> None:
+    options = edit_options(cwd=tmp_path, max_turns=40, max_budget_usd=3.0)
+
+    assert options.setting_sources == ["project"]
+    assert json.loads(options.settings or "{}") == {"disableAllHooks": True}
+    assert options.tools == _EDIT_TOOLS
+    assert options.allowed_tools == _EDIT_TOOLS
+    assert options.permission_mode == "dontAsk"
 
 
 def _edit_decider(
