@@ -21,3 +21,16 @@ def project_allowlist(project_root: Path) -> set[str]:
         for line in allowlist.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
+
+
+def claude_skill_names(project_root: Path) -> tuple[str, ...]:
+    """Only the project's own `claude:<name>` entries are Claude skills; the rest of the
+    allowlist names Codex skills the plan mode reads from trusted roots."""
+    prefix = "claude:"
+    return tuple(
+        sorted(
+            name.removeprefix(prefix)
+            for name in project_allowlist(project_root)
+            if name.startswith(prefix)
+        )
+    )

@@ -3254,6 +3254,48 @@ def test_a_clean_edit_is_verified_in_the_worktree_committed_and_reported(
     )
 
 
+def test_an_edit_report_names_the_guidance_and_skills_the_agent_was_given(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "AGENTS.md").write_text("규칙\n")
+    (project / "CLAUDE.md").write_text("규칙\n")
+    (project / ".piplup").mkdir()
+    (project / ".piplup" / "allowed-skills.txt").write_text("claude:spike-skill\ncodex-only\n")
+    skill = project / ".claude" / "skills" / "spike-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: spike-skill\n---\n")
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", "guidance")
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    response = _go(
+        workflow,
+        context,
+        EditAgent(_write("README.md", "after\n")),
+        "my-project README.md 수정해줘",
+    )
+
+    assert response is not None
+    assert "적용 AGENTS.md: `AGENTS.md`, `CLAUDE.md`" in response
+    assert "적용 Skill: `claude:spike-skill`" in response
+
+
+def test_an_edit_report_says_none_when_the_project_has_no_guidance(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    response = _go(
+        workflow,
+        context,
+        EditAgent(_write("README.md", "after\n")),
+        "my-project README.md 수정해줘",
+    )
+
+    assert response is not None
+    assert "적용 AGENTS.md: 없음\n적용 Skill: 없음" in response
+
+
 def _failing_project(tmp_path: Path) -> Path:
     project = _git_project(tmp_path)
     (project / "pyproject.toml").write_text("")

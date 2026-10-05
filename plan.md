@@ -193,7 +193,7 @@
 - [x] (읽으면) 이 항목은 건너뛴다고 기록한다 — 해당 없음: 스파이크에서 Claude는 `AGENTS.md`를 읽지 않았다. 위 항목을 구현했다 (프로젝트 루트의 `AGENTS.md`를 프롬프트 앞에 붙임: `src/project_guidance.py`. 하위 디렉터리의 `AGENTS.md`와 `CLAUDE.md`의 `@AGENTS.md` import 중복은 다루지 않음. Codex는 CLI가 네이티브로 읽어 붙이지 않음)
 
 ### D. 응답 표시
-- [ ] 편집·분석 응답의 "적용 AGENTS.md / 적용 Skill" 표시가 실제로 로드된 것과 어긋나지 않는다 (현재 편집 경로는 지침을 읽지 않으면서도 "없음"을 낸다 — 표시 출처부터 확인)
+- [x] 편집·분석 응답의 "적용 AGENTS.md / 적용 Skill" 표시가 실제로 로드된 것과 어긋나지 않는다 (현재 편집 경로는 지침을 읽지 않으면서도 "없음"을 낸다 — 표시 출처부터 확인) — 편집 응답만 해당: 편집 경로가 `applied_agents`·`applied_skills`를 비워 항상 "없음"을 냈다. 이제 worktree에 실제로 있는 `AGENTS.md`·`CLAUDE.md`와 허용 목록의 `claude:` skill(SKILL.md 존재)을 표시한다. 분석 응답에는 이 표시가 없다(별도 항목 없음)
 
 ### E. 안전 확인
 - [ ] 프로젝트 `CLAUDE.md`에 "plan.md를 고쳐라" 같은 지시가 있어도 사용자가 이름을 지정하지 않으면 `edit_guard`가 막는다

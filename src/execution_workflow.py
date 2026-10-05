@@ -57,7 +57,7 @@ from src.project_resolver import (
 from src.request_classifier import classify_request, find_project_name_candidates
 from src.request_router import RequestIntent, RequestRouter
 from src.run_state import CodeWorkState, CodeWorkStateStore
-from src.skill_allowlist import project_allowlist
+from src.skill_allowlist import claude_skill_names, project_allowlist
 from src.thread_context import ThreadContextStore
 from src.thread_workspace import ThreadWorkspaces, WorkspaceError
 
@@ -1158,6 +1158,7 @@ class ExecutionWorkflow:
                 f"에이전트 응답: {agent_text.strip()[:1500] or '(없음)'}"
             )
 
+        applied_agents, applied_skills = _edit_applied_guidance(worktree)
         plan = ExecutionPlan(
             goal=goal,
             project_name=project_name,
@@ -1165,6 +1166,8 @@ class ExecutionWorkflow:
             steps=[],
             verification_commands=["run_tests"] if (worktree / "pyproject.toml").exists() else [],
             risk=ExecutionRisk.MODIFY,
+            applied_agents=applied_agents,
+            applied_skills=applied_skills,
         )
         tools = ProjectExecutionTools(worktree, review.changed_files)
         checks = self._run_verifications(
@@ -1544,6 +1547,22 @@ def _render_diff_excerpt(diff: str, *, max_lines: int = 12) -> str:
     if len(lines) > max_lines:
         excerpt += f"\n... ({len(lines) - max_lines}줄 생략)"
     return excerpt
+
+
+def _edit_applied_guidance(worktree: Path) -> tuple[list[str], list[str]]:
+    """What the Claude edit run was actually given: the root AGENTS.md (handed over in
+    the prompt), CLAUDE.md (read by the SDK) and the allowlisted project skills."""
+
+    def is_plain_file(path: Path) -> bool:
+        return path.is_file() and not path.is_symlink()
+
+    agents = [name for name in ("AGENTS.md", "CLAUDE.md") if is_plain_file(worktree / name)]
+    skills = [
+        f"claude:{name}"
+        for name in claude_skill_names(worktree)
+        if is_plain_file(worktree / ".claude" / "skills" / name / "SKILL.md")
+    ]
+    return agents, skills
 
 
 def render_plan_preview(

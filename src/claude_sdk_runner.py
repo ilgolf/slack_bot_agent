@@ -30,7 +30,7 @@ from src.code_agent_analysis import RunnerError, RunnerResult, RunnerTimeout
 from src.edit_guard import is_allowed_tool_call
 from src.project_guidance import with_agents_md
 from src.read_path_guard import is_allowed_read
-from src.skill_allowlist import project_allowlist
+from src.skill_allowlist import claude_skill_names
 
 _READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
 _EDIT_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit"]
@@ -54,7 +54,7 @@ class ClaudeSdkRunner:
     def run(
         self, prompt: str, *, cwd: Path, timeout_seconds: float, max_turns: int
     ) -> RunnerResult:
-        options = read_only_options(cwd=cwd, max_turns=max_turns, skills=_allowed_skills(cwd))
+        options = read_only_options(cwd=cwd, max_turns=max_turns, skills=claude_skill_names(cwd))
         return self._execute(with_agents_md(prompt, Path(cwd)), options, timeout_seconds)
 
     def edit(
@@ -72,7 +72,7 @@ class ClaudeSdkRunner:
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
             named_paths=named_paths,
-            skills=_allowed_skills(cwd),
+            skills=claude_skill_names(cwd),
         )
         return self._execute(with_agents_md(prompt, Path(cwd)), options, timeout_seconds)
 
@@ -132,19 +132,6 @@ def _pre_tool_use_guard(
 # tool guard can see, so they are switched off; the SDK's own PreToolUse guard stays.
 _PROJECT_SETTING_SOURCES: tuple[Literal["project"]] = ("project",)
 _NO_PROJECT_HOOKS = json.dumps({"disableAllHooks": True})
-
-
-def _allowed_skills(project_root: Path) -> tuple[str, ...]:
-    """Only the project's own `claude:<name>` entries are Claude skills; the rest of
-    the allowlist names Codex skills the plan mode reads from trusted roots."""
-    prefix = "claude:"
-    return tuple(
-        sorted(
-            name.removeprefix(prefix)
-            for name in project_allowlist(project_root)
-            if name.startswith(prefix)
-        )
-    )
 
 
 def _with_skill_tool(tools: Sequence[str], skills: Sequence[str]) -> list[str]:
