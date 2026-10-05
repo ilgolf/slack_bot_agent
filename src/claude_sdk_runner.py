@@ -29,6 +29,7 @@ from claude_agent_sdk import (
 from src.code_agent_analysis import RunnerError, RunnerResult, RunnerTimeout
 from src.edit_guard import is_allowed_tool_call
 from src.read_path_guard import is_allowed_read
+from src.skill_allowlist import project_allowlist
 
 _READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
 _EDIT_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit"]
@@ -52,9 +53,8 @@ class ClaudeSdkRunner:
     def run(
         self, prompt: str, *, cwd: Path, timeout_seconds: float, max_turns: int
     ) -> RunnerResult:
-        return self._execute(
-            prompt, read_only_options(cwd=cwd, max_turns=max_turns), timeout_seconds
-        )
+        options = read_only_options(cwd=cwd, max_turns=max_turns, skills=_allowed_skills(cwd))
+        return self._execute(prompt, options, timeout_seconds)
 
     def edit(
         self,
@@ -67,7 +67,11 @@ class ClaudeSdkRunner:
         named_paths: frozenset[str] = frozenset(),
     ) -> RunnerResult:
         options = edit_options(
-            cwd=cwd, max_turns=max_turns, max_budget_usd=max_budget_usd, named_paths=named_paths
+            cwd=cwd,
+            max_turns=max_turns,
+            max_budget_usd=max_budget_usd,
+            named_paths=named_paths,
+            skills=_allowed_skills(cwd),
         )
         return self._execute(prompt, options, timeout_seconds)
 
@@ -127,6 +131,19 @@ def _pre_tool_use_guard(
 # tool guard can see, so they are switched off; the SDK's own PreToolUse guard stays.
 _PROJECT_SETTING_SOURCES: tuple[Literal["project"]] = ("project",)
 _NO_PROJECT_HOOKS = json.dumps({"disableAllHooks": True})
+
+
+def _allowed_skills(project_root: Path) -> tuple[str, ...]:
+    """Only the project's own `claude:<name>` entries are Claude skills; the rest of
+    the allowlist names Codex skills the plan mode reads from trusted roots."""
+    prefix = "claude:"
+    return tuple(
+        sorted(
+            name.removeprefix(prefix)
+            for name in project_allowlist(project_root)
+            if name.startswith(prefix)
+        )
+    )
 
 
 def _with_skill_tool(tools: Sequence[str], skills: Sequence[str]) -> list[str]:

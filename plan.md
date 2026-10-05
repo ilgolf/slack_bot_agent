@@ -186,7 +186,7 @@
 - [x] 편집 옵션이 `setting_sources=["project"]`와 `disableAllHooks` 설정을 가지면서 `tools`·`allowed_tools`·`permission_mode`·`PreToolUse` 가드는 그대로다
 - [x] 텍스트 전용 옵션(`text_only_options`: 분류·일반 답변)은 계속 `setting_sources=[]`다 — 도구가 없는 호출에 프로젝트 설정을 줄 이유가 없다
 - [x] skill 옵션이 이름 목록으로만 구성된다: 목록이 있으면 `skills=[...]`와 `Skill` 도구를 넣고, 없으면 `skills=[]`(목록 비움)이고 `Skill` 도구가 없다 (범위 결정: `"all"`이 아니라 허용한 이름만 — plan 모드의 `.piplup/allowed-skills.txt`를 재사용)
-- [ ] 실행기가 `cwd`의 `.piplup/allowed-skills.txt`에서 `claude:<이름>` 항목을 읽어 옵션의 `skills`로 넘긴다 (허용 목록이 없거나 symlink면 빈 목록)
+- [x] 실행기가 `cwd`의 `.piplup/allowed-skills.txt`에서 `claude:<이름>` 항목을 읽어 옵션의 `skills`로 넘긴다 (허용 목록이 없거나 symlink면 빈 목록)
 
 ### C. AGENTS.md 처리 (스파이크 결과에 따라 하나만)
 - [ ] (Claude가 `AGENTS.md`를 읽지 않으면) 프로젝트에 `AGENTS.md`만 있을 때 그 내용이 에이전트에 전달된다 — 방식은 스파이크 뒤에 정한다
@@ -198,6 +198,8 @@
 ### E. 안전 확인
 - [ ] 프로젝트 `CLAUDE.md`에 "plan.md를 고쳐라" 같은 지시가 있어도 사용자가 이름을 지정하지 않으면 `edit_guard`가 막는다
 - [ ] 전체 `pytest`·`ruff`·`mypy`가 통과한다
+
+- [ ] 편집 에이전트가 worktree의 `.piplup/allowed-skills.txt`나 `.claude/skills/`를 고쳐 다음 실행의 skill 범위를 스스로 넓힐 수 없다 (편집은 worktree에서 일어나고 worktree는 스레드 안에서 유지되므로, `.piplup/`을 보호 경로로 막을지 허용 목록을 원본 저장소에서 읽을지 정한다)
 
 ### F. 마무리
 - [ ] `harness/bot.md`·README·`.env.example`에 "프로젝트 지침과 skill은 SDK가 읽는다, 안전은 코드가 강제한다"를 적는다

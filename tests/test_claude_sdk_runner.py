@@ -167,6 +167,39 @@ def test_run_raises_runner_error_when_the_result_message_reports_an_error(
         runner.run("분석해", cwd=tmp_path, timeout_seconds=30.0, max_turns=5)
 
 
+def _runner_capturing(captured: list[ClaudeAgentOptions]) -> ClaudeSdkRunner:
+    async def fake_query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        captured.append(options)
+        yield _result_message("ok")
+
+    return ClaudeSdkRunner(query=fake_query)
+
+
+def test_run_and_edit_enable_only_the_claude_skills_the_project_allowlisted(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".piplup").mkdir()
+    (tmp_path / ".piplup" / "allowed-skills.txt").write_text(
+        "# comment\nclaude:spike-skill\ncodex-only-skill\n", encoding="utf-8"
+    )
+    captured: list[ClaudeAgentOptions] = []
+    runner = _runner_capturing(captured)
+
+    runner.run("분석해", cwd=tmp_path, timeout_seconds=30.0, max_turns=5)
+    runner.edit("고쳐", cwd=tmp_path, timeout_seconds=30.0, max_turns=5, max_budget_usd=1.0)
+
+    assert [options.skills for options in captured] == [["spike-skill"], ["spike-skill"]]
+
+
+def test_run_enables_no_skill_when_the_project_has_no_allowlist(tmp_path: Path) -> None:
+    captured: list[ClaudeAgentOptions] = []
+
+    _runner_capturing(captured).run("분석해", cwd=tmp_path, timeout_seconds=30.0, max_turns=5)
+
+    assert captured[0].skills == []
+    assert "Skill" not in (captured[0].tools or [])
+
+
 def test_complete_runs_without_tools_in_an_empty_isolated_directory() -> None:
     captured: list[ClaudeAgentOptions] = []
     listing: list[list[str]] = []
