@@ -44,3 +44,17 @@ def test_the_shipped_guidance_states_every_linear_operation_the_bot_supports() -
     for operation in linear_capability().operations:
         assert operation.description in guidance
     assert "`실행`" in guidance
+
+
+def test_the_shipped_guidance_tells_how_to_word_a_work_request() -> None:
+    guidance = load_guidance()
+
+    assert len(guidance) < MAX_GUIDANCE_CHARS  # nothing at the end was cut off
+    for point in (
+        "지시는 그 메시지에 직접",
+        "프로젝트명",
+        "한 번에 한 단계",
+        "설계 문서",
+        "테스트·린트를 실행하지 못합니다",
+    ):
+        assert point in guidance
