@@ -3334,6 +3334,34 @@ def test_before_the_plan_is_confirmed_an_edit_may_only_write_docs_and_that_areas
     assert response is not None and "docs/linear/plan.md" in response
 
 
+def test_the_agent_is_told_which_plan_first_stage_it_is_in(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, _, context = _edit_workflow(tmp_path)
+    planning = EditAgent(_write("docs/linear/plan.md", "# 기획\n\n상태: 초안\n"))
+    _ask_in_mode(workflow, context, planning, "my-project linear 개발 진행해")
+    assert "[기획 단계]" in planning.prompts[0] and "docs/linear/plan.md" in planning.prompts[0]
+
+
+def test_the_agent_is_told_it_is_developing_once_the_plan_is_confirmed(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="확정")
+    workflow, _, context = _edit_workflow(tmp_path)
+    developing = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    _ask_in_mode(workflow, context, developing, "my-project linear 개발 진행해")
+
+    assert "[개발 단계]" in developing.prompts[0]
+
+
+def test_a_project_that_did_not_opt_in_gets_no_stage_instructions(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("README.md", "after\n"))
+
+    _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert "[기획 단계]" not in agent.prompts[0] and "[개발 단계]" not in agent.prompts[0]
+
+
 def test_without_a_named_area_nothing_unlocks_the_plan_file(tmp_path: Path) -> None:
     _plan_first_project(tmp_path)
     workflow, _, context = _edit_workflow(tmp_path)

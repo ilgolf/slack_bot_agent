@@ -1134,9 +1134,10 @@ class ExecutionWorkflow:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return "❌ 이 프로젝트는 worktree로 격리할 수 없어 직접 편집하지 않았습니다."
 
-        write_roots, plan_named = _plan_first_limits(worktree, command_text, earlier_user_messages)
-        named = named | plan_named
-        plan_first = write_roots is not None or plan_first_enabled(worktree)
+        plan_limits = _plan_first_limits(worktree, command_text, earlier_user_messages)
+        write_roots = plan_limits.write_roots
+        named = named | plan_limits.named
+        plan_first = plan_limits.stage is not None
         # Only a project that opted in to plan-first gets a write limit; the agent is given
         # the keyword only then, so agents that predate it keep working unchanged.
         limits = {} if write_roots is None else {"write_roots": write_roots}
@@ -1156,7 +1157,11 @@ class ExecutionWorkflow:
 
         goal = command_text.strip().splitlines()[0] if command_text.strip() else "코드 작업"
         try:
-            agent_text = run_edit(build_edit_prompt(contextual_text, named))
+            agent_text = run_edit(
+                build_edit_prompt(
+                    contextual_text, named, stage=plan_limits.stage, area=plan_limits.area
+                )
+            )
         except AnalysisAgentError as exc:
             return self._edit_interrupted(channel_id, thread_ts, exc)
         review = review_worktree(
@@ -1574,19 +1579,27 @@ def _render_diff_excerpt(diff: str, *, max_lines: int = 12) -> str:
     return excerpt
 
 
+@dataclass(frozen=True)
+class _PlanFirstLimits:
+    write_roots: tuple[str, ...] | None = None
+    named: frozenset[str] = frozenset()
+    stage: str | None = None
+    area: str | None = None
+
+
 def _plan_first_limits(
     worktree: Path, command_text: str, earlier_user_messages: Sequence[str]
-) -> tuple[tuple[str, ...] | None, frozenset[str]]:
+) -> _PlanFirstLimits:
     """What a plan-first project allows this run to write (plan.md Phase 28): `docs/` only,
     plus the one area plan the user's words point at, until that plan is confirmed. A project
-    that did not opt in, or whose area's plan is confirmed, is not limited."""
+    that did not opt in is not limited and gets no stage."""
     if not plan_first_enabled(worktree):
-        return None, frozenset()
+        return _PlanFirstLimits()
     area = detect_area([*earlier_user_messages, command_text])
     if area is not None and plan_status(worktree, area) == CONFIRMED:
-        return None, frozenset()
+        return _PlanFirstLimits(stage="developing", area=area)
     named = frozenset({f"docs/{area}/plan.md"}) if area is not None else frozenset()
-    return ("docs/",), named
+    return _PlanFirstLimits(("docs/",), named, "planning", area)
 
 
 def _edit_applied_guidance(worktree: Path) -> tuple[list[str], list[str]]:

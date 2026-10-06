@@ -184,7 +184,38 @@ _EDIT_POLICY = (
 )
 
 
-def build_edit_prompt(request: str, named_paths: Collection[str]) -> str:
+def _stage_policy(stage: str | None, area: str | None) -> str:
+    """Plan-first projects (plan.md Phase 28): the code enforces the write limit; this only
+    tells the agent which stage it is in so it works with the limit instead of against it."""
+    if stage == "planning" and area is not None:
+        return (
+            f"[기획 단계] `docs/{area}/plan.md`가 아직 확정되지 않았습니다. 코드를 쓰지 말고 "
+            f"`docs/` 아래에서 `docs/{area}/plan.md`를 채우세요: 첫머리에 `상태: 초안` 한 줄, "
+            "본문에 목표·범위·결정·슬라이스와 `## 열린 질문`(사용자가 정해야 할 것은 추측하지 "
+            "말고 `- [ ]`로 남기기). `상태:`를 `확정`으로 바꾸지 마세요. 확정은 사용자의 "
+            f"`기획 확정 {area}` 명령으로만 됩니다.\n"
+        )
+    if stage == "planning":
+        return (
+            "[기획 단계] 어느 영역(linear·code·notion)의 개발인지 알 수 없습니다. 코드를 쓰지 "
+            "말고 파일도 바꾸지 말고, 어느 영역인지 되물으세요.\n"
+        )
+    if stage == "developing" and area is not None:
+        return (
+            f"[개발 단계] `docs/{area}/plan.md`가 확정되었습니다. 그 기획의 슬라이스를 한 번에 "
+            "하나씩만 구현하고, 기획에 없는 것은 만들지 말고 열린 질문으로 되돌려 응답에 "
+            "적으세요. 기획 문서 자체는 수정하지 마세요.\n"
+        )
+    return ""
+
+
+def build_edit_prompt(
+    request: str,
+    named_paths: Collection[str],
+    *,
+    stage: str | None = None,
+    area: str | None = None,
+) -> str:
     """`request` may carry earlier thread messages ahead of "현재 요청:"; only the current
     request stays outside the data tags."""
     thread_context, current_request = _split_request(request)
@@ -193,7 +224,8 @@ def build_edit_prompt(request: str, named_paths: Collection[str]) -> str:
     )
     named = ", ".join(sorted(named_paths))
     named_line = f"사용자가 직접 지정한 파일: {named}\n" if named else ""
-    return f"{_EDIT_POLICY}\n{thread_block}{named_line}사용자 요청: {current_request}\n"
+    stage_line = _stage_policy(stage, area)
+    return f"{_EDIT_POLICY}\n{stage_line}{thread_block}{named_line}사용자 요청: {current_request}\n"
 
 
 def build_edit_repair_prompt(

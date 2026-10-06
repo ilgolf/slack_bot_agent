@@ -88,3 +88,33 @@ def test_the_edit_prompt_lets_a_question_be_answered_from_the_code_without_editi
 
     assert "질문이거나 코드를 설명해 달라는 요청이면 파일을 수정하지 말고" in prompt
     assert "수정을 요청했을 때만 파일을 고치세요" in prompt
+
+
+def test_the_planning_stage_prompt_asks_for_a_plan_document_and_no_code() -> None:
+    prompt = build_edit_prompt("linear 개발 진행해", set(), stage="planning", area="linear")
+
+    assert "코드를 쓰지 말고" in prompt
+    assert "docs/linear/plan.md" in prompt
+    assert "열린 질문" in prompt and "상태: 초안" in prompt
+    assert "한 번에 하나" not in prompt
+
+
+def test_the_planning_stage_prompt_asks_for_the_area_when_none_is_known() -> None:
+    prompt = build_edit_prompt("개발 진행해", set(), stage="planning", area=None)
+
+    assert "어느 영역" in prompt and "linear" in prompt and "notion" in prompt
+    assert "코드를 쓰지 말고" in prompt
+
+
+def test_the_developing_stage_prompt_follows_the_confirmed_plan_one_slice_at_a_time() -> None:
+    prompt = build_edit_prompt("linear 개발 진행해", set(), stage="developing", area="linear")
+
+    assert "docs/linear/plan.md" in prompt
+    assert "한 번에 하나" in prompt and "열린 질문으로 되돌려" in prompt
+    assert "코드를 쓰지 말고" not in prompt
+
+
+def test_without_a_stage_the_edit_prompt_has_no_plan_first_instructions() -> None:
+    prompt = build_edit_prompt("수정해", set())
+
+    assert "docs/" not in prompt and "열린 질문" not in prompt
