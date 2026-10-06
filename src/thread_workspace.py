@@ -172,6 +172,17 @@ class ThreadWorkspaces:
         self._remove(project_root, path, self.branch_name(channel_id, thread_ts))
         return True
 
+    def thread_worktree(self, channel_id: str, thread_ts: str) -> Path | None:
+        """This thread's worktree whichever project it belongs to, `None` when it has none."""
+        key = thread_key(channel_id, thread_ts)
+        if not self._root.is_dir():
+            return None
+        for project_dir in sorted(self._root.iterdir()):
+            path = project_dir / key
+            if path.is_dir():
+                return path
+        return None
+
     def discard_thread(self, channel_id: str, thread_ts: str) -> bool:
         """Discard this thread's worktree whichever project it belongs to. The original
         repository is found from the worktree itself, so this survives a bot restart."""

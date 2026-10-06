@@ -37,6 +37,17 @@ from src.code_work_markers import (
 )
 from src.edit_review import review_worktree
 from src.message_text import content_text
+from src.plan_first import (
+    CONFIRMED,
+    detect_area,
+    has_open_questions,
+    parse_status,
+    plan_first_enabled,
+    plan_path,
+    plan_status,
+    wants_bypass,
+    with_status,
+)
 from src.plan_guard import (
     MAX_WRITE_BYTES,
     PLAN_MAX_TOTAL_BYTES,
@@ -48,6 +59,7 @@ from src.plan_guard import (
     reject_mass_deletion,
     reject_oversized_total,
 )
+from src.project_guidance import guidance_files
 from src.project_resolver import (
     AmbiguousProject,
     InvalidProjectName,
@@ -57,6 +69,7 @@ from src.project_resolver import (
 from src.request_classifier import classify_request, find_project_name_candidates
 from src.request_router import RequestIntent, RequestRouter
 from src.run_state import CodeWorkState, CodeWorkStateStore
+from src.skill_allowlist import claude_skill_names, project_allowlist
 from src.thread_context import ThreadContextStore
 from src.thread_workspace import ThreadWorkspaces, WorkspaceError
 
@@ -69,6 +82,7 @@ _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
 _NO_ROLLBACK_WARNING = "롤백 불가: 이 프로젝트는 worktree로 격리할 수 없어 원본에 직접 적용됩니다."
 # Accept a Korean postposition directly after a filename (``plan.md에``)
 # while returning only the project-relative path.
+_MAX_ANSWER_CHARS = 3500  # stays under Slack's message length limit
 _PATH_IN_REQUEST = re.compile(
     r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?=$|[\s,.:!?…]|[은는이가을를에의])"
 )
@@ -198,7 +212,7 @@ class SkillRegistry:
         }
 
     def select(self, *, intent: str, project_root: Path) -> list[AppliedSkill]:
-        allowed_names = self._project_allowlist(project_root)
+        allowed_names = project_allowlist(project_root)
         desired_names = _skills_for_intent(intent)
         skills: list[AppliedSkill] = []
         for name in desired_names:
@@ -228,20 +242,6 @@ class SkillRegistry:
         if not resolved.is_relative_to(project_root.resolve()):
             return None
         return _load_skill(f"claude:{name}", resolved)
-
-    @staticmethod
-    def _project_allowlist(project_root: Path) -> set[str]:
-        allowlist = project_root / ".piplup" / "allowed-skills.txt"
-        if not allowlist.is_file() or allowlist.is_symlink():
-            return set()
-        resolved = allowlist.resolve()
-        if not resolved.is_relative_to(project_root.resolve()):
-            return set()
-        return {
-            line.strip()
-            for line in allowlist.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        }
 
     def _find_skill(self, name: str) -> Path | None:
         for root in self.trusted_roots.values():
@@ -583,6 +583,25 @@ def _edit_named_paths(command_text: str) -> list[str]:
     return list(dict.fromkeys(named))
 
 
+def _edit_named_paths_in_thread(
+    command_text: str, earlier_user_messages: Sequence[str]
+) -> list[str]:
+    """`_edit_named_paths` plus the management files (`plan.md`, ...) the user themself named
+    in earlier messages of this thread, so a follow-up without a file name keeps them
+    editable. Only the user's own words count — never bot replies or data the bot read —
+    and a plan-follow request keeps `plan.md` read-only whatever was said before."""
+    named = _edit_named_paths(command_text)
+    if _is_plan_follow_request(command_text):
+        return named
+    earlier = [
+        path
+        for message in earlier_user_messages
+        for path in _edit_named_paths(message)
+        if is_protected_meta_path(path)
+    ]
+    return list(dict.fromkeys([*named, *earlier]))
+
+
 def _is_guarded_path(path: str) -> bool:
     return is_protected_meta_path(path) or is_risky_path(path) or is_secret_path(path)
 
@@ -724,7 +743,14 @@ class ExecutionWorkflow:
         edit_root = None if autopilot else self._direct_edit_root(agent, project_name)
         if edit_root is not None:
             return self._edit_directly(
-                edit_root, project_name, channel_id, thread_ts, command_text, contextual_text, agent
+                edit_root,
+                project_name,
+                channel_id,
+                thread_ts,
+                command_text,
+                contextual_text,
+                agent,
+                thread_context.user_messages(channel_id, thread_ts),
             )
         creator = getattr(agent, "create_execution_plan", None)
         if not callable(creator):
@@ -1100,13 +1126,14 @@ class ExecutionWorkflow:
         command_text: str,
         contextual_text: str,
         agent: object,
+        earlier_user_messages: Sequence[str] = (),
     ) -> str:
         from src.code_plan_prompts import build_edit_prompt, build_edit_repair_prompt
 
         assert self.workspaces is not None
         workspaces = self.workspaces
         edit = getattr(agent, "edit_code")  # noqa: B009 - checked by _direct_edit_root
-        named = frozenset(_edit_named_paths(command_text))
+        named = frozenset(_edit_named_paths_in_thread(command_text, earlier_user_messages))
         self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IMPLEMENTING)
         try:
             worktree = workspaces.ensure(root, project_name, channel_id, thread_ts)
@@ -1117,6 +1144,14 @@ class ExecutionWorkflow:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return "❌ 이 프로젝트는 worktree로 격리할 수 없어 직접 편집하지 않았습니다."
 
+        plan_limits = _plan_first_limits(worktree, command_text, earlier_user_messages)
+        write_roots = plan_limits.write_roots
+        named = named | plan_limits.named
+        plan_first = plan_limits.stage is not None
+        # Only a project that opted in to plan-first gets a write limit; the agent is given
+        # the keyword only then, so agents that predate it keep working unchanged.
+        limits = {} if write_roots is None else {"write_roots": write_roots}
+
         def run_edit(prompt: str) -> str:
             return str(
                 edit(
@@ -1126,24 +1161,38 @@ class ExecutionWorkflow:
                     named_paths=named,
                     channel_id=channel_id,
                     thread_ts=thread_ts,
+                    **limits,
                 )
             )
 
         goal = command_text.strip().splitlines()[0] if command_text.strip() else "코드 작업"
         try:
-            agent_text = run_edit(build_edit_prompt(contextual_text, named))
+            agent_text = run_edit(
+                build_edit_prompt(
+                    contextual_text, named, stage=plan_limits.stage, area=plan_limits.area
+                )
+            )
         except AnalysisAgentError as exc:
             return self._edit_interrupted(channel_id, thread_ts, exc)
-        review = review_worktree(workspaces.git, worktree, named_paths=named)
+        review = review_worktree(
+            workspaces.git,
+            worktree,
+            named_paths=named,
+            write_roots=write_roots,
+            plan_first=plan_first,
+        )
         if not review.ok:
             return self._edit_rejected(project_name, channel_id, thread_ts, review.violations)
         if not review.changed_files:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IDLE)
+            # Nothing to review: the run was a question about the code, so its reply is the
+            # answer, not a report about an edit that never happened.
             return (
-                "코드 에이전트가 파일을 변경하지 않았습니다.\n"
-                f"에이전트 응답: {agent_text.strip()[:1500] or '(없음)'}"
+                agent_text.strip()[:_MAX_ANSWER_CHARS]
+                or "코드 에이전트가 파일을 변경하지 않았고 답변도 비어 있습니다."
             )
 
+        applied_agents, applied_skills = _edit_applied_guidance(worktree)
         plan = ExecutionPlan(
             goal=goal,
             project_name=project_name,
@@ -1151,6 +1200,8 @@ class ExecutionWorkflow:
             steps=[],
             verification_commands=["run_tests"] if (worktree / "pyproject.toml").exists() else [],
             risk=ExecutionRisk.MODIFY,
+            applied_agents=applied_agents,
+            applied_skills=applied_skills,
         )
         tools = ProjectExecutionTools(worktree, review.changed_files)
         checks = self._run_verifications(
@@ -1169,7 +1220,13 @@ class ExecutionWorkflow:
                 run_edit(build_edit_repair_prompt(contextual_text, review.changed_files, checks))
             except AnalysisAgentError as exc:
                 return self._edit_interrupted(channel_id, thread_ts, exc)
-            review = review_worktree(workspaces.git, worktree, named_paths=named)
+            review = review_worktree(
+            workspaces.git,
+            worktree,
+            named_paths=named,
+            write_roots=write_roots,
+            plan_first=plan_first,
+        )
             if not review.ok:
                 return self._edit_rejected(project_name, channel_id, thread_ts, review.violations)
             plan = replace(plan, affected_files=list(review.changed_files))
@@ -1252,6 +1309,40 @@ class ExecutionWorkflow:
             else "worktree를 폐기하지 못했습니다. `폐기`라고 보내 정리해 주세요."
         )
         return f"❌ 코드 에이전트의 변경이 안전 검사를 통과하지 못했습니다.\n{listed}\n{outcome}"
+
+    def confirm_plan(self, channel_id: str, thread_ts: str, area: str) -> str:
+        """The user's `기획 확정 <영역>` (plan.md Phase 28): only this code, never the agent,
+        sets an area's plan to `확정`, and only when it has no open questions left."""
+        worktree = (
+            self.workspaces.thread_worktree(channel_id, thread_ts)
+            if self.workspaces is not None
+            else None
+        )
+        if worktree is None:
+            return (
+                "확정할 기획이 없습니다. 먼저 `개발 진행해`로 이 스레드에서 기획을 쓰게 해 주세요."
+            )
+        if not plan_first_enabled(worktree):
+            return "이 프로젝트는 기획 우선 모드가 아닙니다 (`.piplup/plan-first`가 없습니다)."
+        relative = f"docs/{area}/plan.md"
+        try:
+            text = plan_path(worktree, area).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return f"`{relative}`가 없어 확정할 수 없습니다. 먼저 기획을 쓰게 해 주세요."
+        if parse_status(text) == CONFIRMED:
+            return f"`{relative}`는 이미 확정되어 있습니다."
+        if has_open_questions(text):
+            return f"`{relative}`에 열린 질문이 남아 있어 확정할 수 없습니다. 먼저 결정해 주세요."
+        assert self.workspaces is not None
+        try:
+            plan_path(worktree, area).write_text(with_status(text, CONFIRMED), encoding="utf-8")
+            self.workspaces.commit(worktree, [relative], f"기획 확정: {area}")
+        except (OSError, WorkspaceError):
+            return f"❌ `{relative}`를 확정하지 못했습니다. 파일을 확인해 주세요."
+        return (
+            f"✅ `{relative}`를 확정했습니다. 이제 같은 스레드에서 개발을 요청하면 "
+            "기획의 슬라이스를 구현합니다."
+        )
 
     def _discard(self, channel_id: str, thread_ts: str) -> str:
         none_message = "폐기할 작업 브랜치(worktree)가 없습니다."
@@ -1530,6 +1621,48 @@ def _render_diff_excerpt(diff: str, *, max_lines: int = 12) -> str:
     if len(lines) > max_lines:
         excerpt += f"\n... ({len(lines) - max_lines}줄 생략)"
     return excerpt
+
+
+@dataclass(frozen=True)
+class _PlanFirstLimits:
+    write_roots: tuple[str, ...] | None = None
+    named: frozenset[str] = frozenset()
+    stage: str | None = None
+    area: str | None = None
+
+
+def _plan_first_limits(
+    worktree: Path, command_text: str, earlier_user_messages: Sequence[str]
+) -> _PlanFirstLimits:
+    """What a plan-first project allows this run to write (plan.md Phase 28): `docs/` only,
+    plus the one area plan the user's words point at, until that plan is confirmed. A project
+    that did not opt in is not limited and gets no stage."""
+    if not plan_first_enabled(worktree):
+        return _PlanFirstLimits()
+    area = detect_area([*earlier_user_messages, command_text])
+    if wants_bypass(command_text):
+        # Only this message counts: an earlier "기획 없이" does not carry over to later ones.
+        return _PlanFirstLimits(stage="bypassed", area=area)
+    if area is not None and plan_status(worktree, area) == CONFIRMED:
+        return _PlanFirstLimits(stage="developing", area=area)
+    named = frozenset({f"docs/{area}/plan.md"}) if area is not None else frozenset()
+    return _PlanFirstLimits(("docs/",), named, "planning", area)
+
+
+def _edit_applied_guidance(worktree: Path) -> tuple[list[str], list[str]]:
+    """What the Claude edit run was actually given: the guidance files handed over in the
+    prompt (CLAUDE.md is not read) and the allowlisted project skills."""
+
+    def is_plain_file(path: Path) -> bool:
+        return path.is_file() and not path.is_symlink()
+
+    agents = guidance_files(worktree)
+    skills = [
+        f"claude:{name}"
+        for name in claude_skill_names(worktree)
+        if is_plain_file(worktree / ".claude" / "skills" / name / "SKILL.md")
+    ]
+    return agents, skills
 
 
 def render_plan_preview(

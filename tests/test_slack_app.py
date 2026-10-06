@@ -50,7 +50,6 @@ def test_socket_mode_handler_passes_slack_client_for_progress_updates(
 ) -> None:
     from src import slack_app
     from src.thread_context import ThreadContextStore
-    from tests.router_doubles import CodeWorkWords
     from tests.test_autopilot import SequencedPlanningAgent, _write_plan
 
     handlers: dict[str, Any] = {}
@@ -77,13 +76,15 @@ def test_socket_mode_handler_passes_slack_client_for_progress_updates(
             updates.append(kwargs)
 
     monkeypatch.setattr(slack_app, "build_slack_app", lambda _settings: FakeApp())
-    monkeypatch.setattr(slack_app, "build_intent_classifier", lambda _agent: CodeWorkWords())
     monkeypatch.setattr(slack_app, "SocketModeHandler", FakeSocketModeHandler)
     project = tmp_path / "my-project"
     project.mkdir()
     (project / "plan.md").write_text("- [ ] first\n")
     settings = Settings(
-        slack_bot_token="xoxb-fake", slack_app_token="xapp-fake", projects_root=str(tmp_path)
+        slack_bot_token="xoxb-fake",
+        slack_app_token="xapp-fake",
+        projects_root=str(tmp_path),
+        code_work_mode="plan",
     )
 
     start_socket_mode(

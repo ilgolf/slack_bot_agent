@@ -6,9 +6,11 @@ Needs the optional `claude` extra (`claude-agent-sdk`).
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Literal
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -26,7 +28,9 @@ from claude_agent_sdk import (
 
 from src.code_agent_analysis import RunnerError, RunnerResult, RunnerTimeout
 from src.edit_guard import is_allowed_tool_call
+from src.project_guidance import with_project_guidance
 from src.read_path_guard import is_allowed_read
+from src.skill_allowlist import claude_skill_names
 
 _READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
 _EDIT_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit"]
@@ -50,9 +54,8 @@ class ClaudeSdkRunner:
     def run(
         self, prompt: str, *, cwd: Path, timeout_seconds: float, max_turns: int
     ) -> RunnerResult:
-        return self._execute(
-            prompt, read_only_options(cwd=cwd, max_turns=max_turns), timeout_seconds
-        )
+        options = read_only_options(cwd=cwd, max_turns=max_turns, skills=claude_skill_names(cwd))
+        return self._execute(with_project_guidance(prompt, Path(cwd)), options, timeout_seconds)
 
     def edit(
         self,
@@ -63,11 +66,17 @@ class ClaudeSdkRunner:
         max_turns: int,
         max_budget_usd: float,
         named_paths: frozenset[str] = frozenset(),
+        write_roots: Collection[str] | None = None,
     ) -> RunnerResult:
         options = edit_options(
-            cwd=cwd, max_turns=max_turns, max_budget_usd=max_budget_usd, named_paths=named_paths
+            cwd=cwd,
+            max_turns=max_turns,
+            max_budget_usd=max_budget_usd,
+            named_paths=named_paths,
+            write_roots=write_roots,
+            skills=claude_skill_names(cwd),
         )
-        return self._execute(prompt, options, timeout_seconds)
+        return self._execute(with_project_guidance(prompt, Path(cwd)), options, timeout_seconds)
 
     def complete(self, prompt: str, *, timeout_seconds: float) -> str:
         """Answer from the prompt alone: no tools, one turn, an empty scratch directory."""
@@ -120,17 +129,39 @@ def _pre_tool_use_guard(
     return HookMatcher(matcher="|".join(tools), hooks=[guard])
 
 
-def read_only_options(*, cwd: Path, max_turns: int) -> ClaudeAgentOptions:
+# Project settings come from "project" only (never "user"/"local", so personal settings
+# stay out), which is what makes the project's skills discoverable. Project hooks run shell
+# commands on the host, which no tool guard can see, so they are switched off; the SDK's own
+# PreToolUse guard stays. CLAUDE.md is developer-facing (e.g. a TDD `go` workflow) and does
+# not fit an agent that has no shell and answers in one go, so its loading is switched off;
+# Slack-specific guidance comes from `.piplup/slack.md` instead (see project_guidance).
+_PROJECT_SETTING_SOURCES: tuple[Literal["project"]] = ("project",)
+_NO_PROJECT_HOOKS = json.dumps({"disableAllHooks": True})
+_NO_CLAUDE_MD = {"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"}
+
+
+def _with_skill_tool(tools: Sequence[str], skills: Sequence[str]) -> list[str]:
+    """The `Skill` tool exists only when a skill is enabled: without it in `tools` the
+    SDK lists skills the model cannot invoke (spike A)."""
+    return [*tools, "Skill"] if skills else list(tools)
+
+
+def read_only_options(
+    *, cwd: Path, max_turns: int, skills: Sequence[str] = ()
+) -> ClaudeAgentOptions:
     """`tools` removes every other built-in tool from the model's context; the same
     list in `allowed_tools` only pre-approves these so no prompt blocks a headless run."""
     project_root = Path(cwd)
+    tools = _with_skill_tool(_READ_ONLY_TOOLS, skills)
     return ClaudeAgentOptions(
-        tools=list(_READ_ONLY_TOOLS),
-        allowed_tools=list(_READ_ONLY_TOOLS),
+        tools=tools,
+        allowed_tools=tools,
+        skills=list(skills),
         cwd=cwd,
         max_turns=max_turns,
-        # `[]` is SDK isolation mode: no `~/.claude` settings, hooks or CLAUDE.md leak in.
-        setting_sources=[],
+        setting_sources=list(_PROJECT_SETTING_SOURCES),
+        settings=_NO_PROJECT_HOOKS,
+        env=dict(_NO_CLAUDE_MD),
         permission_mode="dontAsk",
         hooks={
             "PreToolUse": [
@@ -150,23 +181,33 @@ def edit_options(
     max_turns: int,
     max_budget_usd: float,
     named_paths: frozenset[str] = frozenset(),
+    write_roots: Collection[str] | None = None,
+    skills: Sequence[str] = (),
 ) -> ClaudeAgentOptions:
     """Edit mode: file tools only (no shell), every call judged by `edit_guard` before it
     runs. `cwd` must be the thread worktree, never the original checkout."""
     worktree = Path(cwd)
+    tools = _with_skill_tool(_EDIT_TOOLS, skills)
     return ClaudeAgentOptions(
-        tools=list(_EDIT_TOOLS),
-        allowed_tools=list(_EDIT_TOOLS),
+        tools=tools,
+        allowed_tools=tools,
+        skills=list(skills),
         cwd=cwd,
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
-        setting_sources=[],
+        setting_sources=list(_PROJECT_SETTING_SOURCES),
+        settings=_NO_PROJECT_HOOKS,
+        env=dict(_NO_CLAUDE_MD),
         permission_mode="dontAsk",
         hooks={
             "PreToolUse": [
                 _pre_tool_use_guard(
                     lambda tool, tool_input: is_allowed_tool_call(
-                        worktree, tool, tool_input, named_paths=named_paths
+                        worktree,
+                        tool,
+                        tool_input,
+                        named_paths=named_paths,
+                        write_roots=write_roots,
                     ),
                     "이 작업은 허용되지 않습니다.",
                     _EDIT_TOOLS,

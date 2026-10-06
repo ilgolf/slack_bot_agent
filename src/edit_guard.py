@@ -29,6 +29,7 @@ def is_allowed_tool_call(
     tool_input: Mapping[str, object],
     *,
     named_paths: Collection[str] = (),
+    write_roots: Collection[str] | None = None,
 ) -> bool:
     """The one decision for any tool call in edit mode: reads and edits stay inside the
     worktree under the rules above, and every other tool (Bash included) is denied.
@@ -46,7 +47,9 @@ def is_allowed_tool_call(
                 return False
             return is_allowed_read(worktree, tool_name, tool_input)
         if tool_name in _EDIT_TOOLS:
-            return is_allowed_edit(worktree, tool_name, tool_input, named_paths=named_paths)
+            return is_allowed_edit(
+                worktree, tool_name, tool_input, named_paths=named_paths, write_roots=write_roots
+            )
     except Exception:
         return False
     return False
@@ -58,9 +61,11 @@ def is_allowed_edit(
     tool_input: Mapping[str, object],
     *,
     named_paths: Collection[str] = (),
+    write_roots: Collection[str] | None = None,
 ) -> bool:
     """`named_paths` are files the user asked for by name; only those may be management
-    files (plan.md, CLAUDE.md, ...) or code-executing files (conftest.py, *.sh, ...)."""
+    files (plan.md, CLAUDE.md, ...) or code-executing files (conftest.py, *.sh, ...).
+    `write_roots`, when given, are the only directories an edit may land in."""
     if tool_name not in _EDIT_TOOLS:
         return False
     path = tool_input.get("file_path")
@@ -71,6 +76,8 @@ def is_allowed_edit(
     relative = _relative(worktree, str(path))
     if relative == ".":
         return False
+    if write_roots is not None and not is_within_roots(relative, write_roots):
+        return False
     if is_secret_path(relative):
         return False
     named = {posixpath.normpath(name.replace("\\", "/")) for name in named_paths}
@@ -78,6 +85,11 @@ def is_allowed_edit(
     if guarded and relative not in named:
         return False
     return tool_name != "Write" or _is_acceptable_write(worktree, relative, tool_input)
+
+
+def is_within_roots(relative: str, roots: Collection[str]) -> bool:
+    """`relative` is a normalized worktree-relative path; a root is a directory like `docs/`."""
+    return any(relative.startswith(root.rstrip("/") + "/") for root in roots)
 
 
 def _is_acceptable_write(worktree: Path, relative: str, tool_input: Mapping[str, object]) -> bool:

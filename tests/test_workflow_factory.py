@@ -24,10 +24,10 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
     )
 
 
-def test_the_workflow_uses_plan_mode_by_default(tmp_path: Path) -> None:
+def test_the_workflow_uses_analysis_mode_by_default(tmp_path: Path) -> None:
     workflow = build_execution_workflow(_settings(tmp_path))
 
-    assert workflow.code_work_mode == "plan"
+    assert workflow.code_work_mode == "analysis"
     assert workflow.workspaces is not None
 
 

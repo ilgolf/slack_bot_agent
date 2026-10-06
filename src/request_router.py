@@ -5,14 +5,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
-
-from src.thread_context import ThreadWorkContext
+from typing import Literal
 
 
 class RequestIntent(StrEnum):
     CONTROL_CONFIRM = "control_confirm"
     CONTROL_CANCEL = "control_cancel"
+    PLAN_CONFIRM = "plan_confirm"
     CODE_WORK = "code_work"
     LINEAR_READ = "linear_read"
     LINEAR_MUTATION = "linear_mutation"
@@ -27,13 +26,17 @@ class RoutedRequest:
     text: str
     project_name: str | None = None
     confirmation_verb: str | None = None
-    llm_classified: bool = False
+    mode_decided: bool = False
+    area: str | None = None
 
 
 _MENTION = re.compile(r"<@[^>]+>")
 _CONFIRM = re.compile(r"^(실행|실행해줘|실행합니다)$")
 _CANCEL = re.compile(r"^(취소|취소해줘|취소합니다)$")
 _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
+_PLAN_CONFIRM = re.compile(
+    r"^기획\s*확정\s+(linear|code|notion)(?:\s*(?:해줘|합니다))?$", re.IGNORECASE
+)
 # Asking about the feature is a question, not a request to run it.
 _FEATURE_QUESTION_MARKERS = ("기능", "가능", "지원", "어떻게", "방법")
 _LINEAR_CREATE = ("이슈 생성", "티켓 생성", "이슈 추가", "티켓 추가", "이슈 만들", "티켓 만들")
@@ -50,10 +53,6 @@ _LINEAR_READ = (
 )
 
 
-class IntentClassifier(Protocol):
-    def classify(self, text: str, thread_context: ThreadWorkContext | None) -> RequestIntent: ...
-
-
 class RequestRouter:
     """Current-message-only grammar.
 
@@ -61,15 +60,14 @@ class RequestRouter:
     current code request into a Linear workspace operation.
     """
 
-    def __init__(self, intent_classifier: IntentClassifier | None = None) -> None:
-        self._intent_classifier = intent_classifier
+    def __init__(self, code_work_mode: Literal["analysis", "plan", "edit"] = "analysis") -> None:
+        self._code_work_mode = code_work_mode
 
     def route(
         self,
         text: str,
         *,
         project_name: str | None = None,
-        thread_context: ThreadWorkContext | None = None,
     ) -> RoutedRequest:
         command = _MENTION.sub("", text).strip()
         normalized = command.casefold()
@@ -86,6 +84,14 @@ class RequestRouter:
             return RoutedRequest(RequestIntent.CONTROL_CANCEL, command, project_name, "취소")
         if _DISCARD.fullmatch(command):
             return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
+        plan_confirmation = _PLAN_CONFIRM.fullmatch(command)
+        if plan_confirmation:
+            return RoutedRequest(
+                RequestIntent.PLAN_CONFIRM,
+                command,
+                project_name,
+                area=plan_confirmation[1].lower(),
+            )
 
         if _is_thread_summary_line(command_line) and not any(
             marker in command_line for marker in _FEATURE_QUESTION_MARKERS
@@ -100,26 +106,10 @@ class RequestRouter:
             if _starts_with_linear_command(command_line, _LINEAR_READ):
                 return RoutedRequest(RequestIntent.LINEAR_READ, command, project_name)
 
-        # Everything else is the classifier's call; no classifier, an error or an unsure
-        # answer is a read-only answer.
-        if self._classified_as_code_work(command, thread_context):
-            return RoutedRequest(
-                RequestIntent.CODE_WORK, command, project_name, llm_classified=True
-            )
-        return RoutedRequest(RequestIntent.PROJECT_ANALYSIS, command, project_name)
-
-    def _classified_as_code_work(
-        self, command: str, thread_context: ThreadWorkContext | None
-    ) -> bool:
-        if self._intent_classifier is None:
-            return False
-        try:
-            return self._intent_classifier.classify(command, thread_context) is (
-                RequestIntent.CODE_WORK
-            )
-        except Exception:
-            # An unavailable classifier must never break routing.
-            return False
+        # Everything else follows the configured mode (`CODE_WORK_MODE`), never the wording.
+        if self._code_work_mode == "analysis":
+            return RoutedRequest(RequestIntent.PROJECT_ANALYSIS, command, project_name)
+        return RoutedRequest(RequestIntent.CODE_WORK, command, project_name, mode_decided=True)
 
 
 def _is_thread_summary_line(command_line: str) -> bool:

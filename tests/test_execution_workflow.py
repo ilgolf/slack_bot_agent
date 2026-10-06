@@ -6,9 +6,10 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -32,6 +33,7 @@ from src.execution_workflow import (
     render_code_work_status,
     render_execution_result,
 )
+from src.plan_first import plan_status
 from src.project_resolver import ProjectResolver
 from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
@@ -3159,6 +3161,7 @@ class EditAgent:
         self.edits = list(edits)
         self.prompts: list[str] = []
         self.calls: list[tuple[Path, str, frozenset[str]]] = []
+        self.write_roots: list[Collection[str] | None] = []
         self.plan_calls = 0
         self.error: Exception | None = None
 
@@ -3169,11 +3172,13 @@ class EditAgent:
         *,
         project_name: str,
         named_paths: frozenset[str] = frozenset(),
+        write_roots: Collection[str] | None = None,
         channel_id: str = "-",
         thread_ts: str = "-",
     ) -> str:
         self.prompts.append(prompt)
         self.calls.append((worktree, project_name, named_paths))
+        self.write_roots.append(write_roots)
         if self.error is not None:
             raise self.error
         edit = self.edits.pop(0) if len(self.edits) > 1 else self.edits[0]
@@ -3252,6 +3257,214 @@ def test_a_clean_edit_is_verified_in_the_worktree_committed_and_reported(
     assert workflow.code_work_state_store.state(channel_id="C1", thread_ts="1.1") is (
         CodeWorkState.SUCCEEDED
     )
+
+
+def _ask_in_mode(
+    workflow: ExecutionWorkflow, context: ThreadContextStore, agent: object, text: str
+) -> str | None:
+    """What the coordinator does when the configured mode routes the message as code work."""
+    return workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text=text,
+        thread_context=context,
+        agent=agent,
+        trusted_code_work=True,
+    )
+
+
+def test_an_edit_run_that_changes_nothing_answers_with_the_agents_reply(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    class Explainer(EditAgent):
+        def edit_code(self, prompt: str, worktree: Path, **kwargs: Any) -> str:
+            super().edit_code(prompt, worktree, **kwargs)
+            return "`README.md`는 프로젝트 소개 한 줄입니다."
+
+    response = _ask_in_mode(
+        workflow, context, Explainer(lambda _worktree: None), "my-project README.md 설명해줘"
+    )
+
+    assert response == "`README.md`는 프로젝트 소개 한 줄입니다."
+    assert workflow.code_work_state_store.state(channel_id="C1", thread_ts="1.1") is (
+        CodeWorkState.IDLE
+    )
+
+
+def test_an_edit_run_that_changes_nothing_and_says_nothing_reports_that(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    class Silent(EditAgent):
+        def edit_code(self, prompt: str, worktree: Path, **kwargs: Any) -> str:
+            super().edit_code(prompt, worktree, **kwargs)
+            return "  "
+
+    response = _ask_in_mode(
+        workflow, context, Silent(lambda _worktree: None), "my-project README.md 설명해줘"
+    )
+
+    assert response == "코드 에이전트가 파일을 변경하지 않았고 답변도 비어 있습니다."
+
+
+def _plan_first_project(tmp_path: Path, *, plan_status: str | None = None) -> Path:
+    project = _git_project(tmp_path)
+    (project / ".piplup").mkdir()
+    (project / ".piplup" / "plan-first").write_text("")
+    if plan_status is not None:
+        plan = project / "docs" / "linear" / "plan.md"
+        plan.parent.mkdir(parents=True)
+        plan.write_text(f"# 기획\n\n상태: {plan_status}\n")
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", "plan-first")
+    return project
+
+
+def test_before_the_plan_is_confirmed_an_edit_may_only_write_docs_and_that_areas_plan(
+    tmp_path: Path,
+) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("docs/linear/plan.md", "# 기획\n\n상태: 초안\n\n보강\n"))
+
+    response = _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert agent.write_roots == [("docs/",)]
+    assert agent.calls[0][2] == frozenset({"docs/linear/plan.md"})
+    assert response is not None and "docs/linear/plan.md" in response
+
+
+def test_the_agent_is_told_which_plan_first_stage_it_is_in(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, _, context = _edit_workflow(tmp_path)
+    planning = EditAgent(_write("docs/linear/plan.md", "# 기획\n\n상태: 초안\n"))
+    _ask_in_mode(workflow, context, planning, "my-project linear 개발 진행해")
+    assert "[기획 단계]" in planning.prompts[0] and "docs/linear/plan.md" in planning.prompts[0]
+
+
+def test_the_agent_is_told_it_is_developing_once_the_plan_is_confirmed(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="확정")
+    workflow, _, context = _edit_workflow(tmp_path)
+    developing = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    _ask_in_mode(workflow, context, developing, "my-project linear 개발 진행해")
+
+    assert "[개발 단계]" in developing.prompts[0]
+
+
+def test_a_project_that_did_not_opt_in_gets_no_stage_instructions(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("README.md", "after\n"))
+
+    _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert "[기획 단계]" not in agent.prompts[0] and "[개발 단계]" not in agent.prompts[0]
+
+
+def test_without_a_named_area_nothing_unlocks_the_plan_file(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("docs/notes.md", "어느 영역인가요?\n"))
+
+    _ask_in_mode(workflow, context, agent, "my-project 개발 진행해")
+
+    assert agent.write_roots == [("docs/",)]
+    assert agent.calls[0][2] == frozenset()
+
+
+def test_an_edit_that_writes_code_before_the_plan_is_confirmed_is_thrown_away(
+    tmp_path: Path,
+) -> None:
+    project = _plan_first_project(tmp_path, plan_status="초안")
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    response = _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert response is not None and "src/feature.py" in response
+    assert workspaces.existing("my-project", "C1", "1.1") is None
+    assert not (project / "src" / "feature.py").exists()
+
+
+def test_a_plan_the_agent_confirms_itself_is_thrown_away(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("docs/linear/plan.md", "# 기획\n\n상태: 확정\n"))
+
+    response = _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert response is not None and "기획 확정" in response
+    assert workspaces.existing("my-project", "C1", "1.1") is None
+
+
+def test_once_the_plan_is_confirmed_the_edit_may_write_code(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="확정")
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    response = _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert agent.write_roots == [None]
+    assert response is not None and "`src/feature.py`" in response
+    assert worktree is not None and (worktree / "src" / "feature.py").exists()
+
+
+def test_a_project_that_did_not_opt_in_is_edited_as_before(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    response = _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert agent.write_roots == [None]
+    assert response is not None and "`src/feature.py`" in response
+
+
+def test_an_edit_report_names_the_guidance_and_skills_the_agent_was_given(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "AGENTS.md").write_text("규칙\n")
+    (project / "CLAUDE.md").write_text("규칙\n")
+    (project / ".piplup").mkdir()
+    (project / ".piplup" / "allowed-skills.txt").write_text("claude:spike-skill\ncodex-only\n")
+    (project / ".piplup" / "slack.md").write_text("Slack 전용 규칙\n")
+    skill = project / ".claude" / "skills" / "spike-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: spike-skill\n---\n")
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", "guidance")
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    response = _go(
+        workflow,
+        context,
+        EditAgent(_write("README.md", "after\n")),
+        "my-project README.md 수정해줘",
+    )
+
+    assert response is not None
+    # CLAUDE.md is present but never read, so it is not reported as applied.
+    assert "적용 AGENTS.md: `AGENTS.md`, `.piplup/slack.md`" in response
+    assert "적용 Skill: `claude:spike-skill`" in response
+
+
+def test_an_edit_report_says_none_when_the_project_has_no_guidance(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    response = _go(
+        workflow,
+        context,
+        EditAgent(_write("README.md", "after\n")),
+        "my-project README.md 수정해줘",
+    )
+
+    assert response is not None
+    assert "적용 AGENTS.md: 없음\n적용 Skill: 없음" in response
 
 
 def _failing_project(tmp_path: Path) -> Path:
@@ -3513,3 +3726,217 @@ def test_real_pytest_check_has_no_color_codes_and_leaves_no_bytecode_behind(
     assert not result.success
     assert "\x1b[" not in result.output
     assert _git(project, "status", "--porcelain", "-uall") == ""
+
+
+# --- Phase 21, B: protected files the user named earlier in the thread ----------------
+
+
+def _named_paths_for_follow_up(
+    tmp_path: Path,
+    *,
+    prior_user: list[str],
+    prior_context: list[str] | None = None,
+    prior_thread: str = "1.1",
+    text: str = "my-project 그대로 진행해줘",
+) -> frozenset[str]:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+    for message in prior_user:
+        context.append_user_message("C1", prior_thread, message)
+        context.append("C1", prior_thread, message)
+    for message in prior_context or []:
+        context.append("C1", prior_thread, message)
+    agent = EditAgent(_write("README.md", "after\n"))
+
+    workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text=text,
+        thread_context=context,
+        agent=agent,
+        trusted_code_work=True,
+    )
+
+    return agent.calls[0][2]
+
+
+def test_protected_file_the_user_named_earlier_in_the_thread_stays_editable(
+    tmp_path: Path,
+) -> None:
+    named = _named_paths_for_follow_up(tmp_path, prior_user=["my-project plan.md 수정해줘"])
+
+    assert named == frozenset({"plan.md"})
+
+
+def test_protected_file_only_a_bot_reply_mentioned_is_not_editable(tmp_path: Path) -> None:
+    named = _named_paths_for_follow_up(
+        tmp_path,
+        prior_user=["my-project 분석해줘"],
+        prior_context=["my-project의 plan.md를 보세요"],
+    )
+
+    assert named == frozenset()
+
+
+def test_protected_file_named_in_another_thread_is_not_editable(tmp_path: Path) -> None:
+    named = _named_paths_for_follow_up(
+        tmp_path, prior_user=["my-project plan.md 수정해줘"], prior_thread="9.9"
+    )
+
+    assert named == frozenset()
+
+
+def test_plan_follow_request_does_not_make_an_earlier_named_plan_editable(
+    tmp_path: Path,
+) -> None:
+    named = _named_paths_for_follow_up(
+        tmp_path,
+        prior_user=["my-project plan.md 수정해줘"],
+        text="my-project plan.md 대로 구현해줘",
+    )
+
+    assert "plan.md" not in named
+
+
+def test_earlier_named_file_that_is_not_protected_does_not_change_the_named_paths(
+    tmp_path: Path,
+) -> None:
+    named = _named_paths_for_follow_up(
+        tmp_path, prior_user=["my-project src/app.py 와 conftest.py 수정해줘"]
+    )
+
+    assert named == frozenset()
+
+
+def test_blanking_a_file_named_earlier_in_the_thread_is_still_rejected(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    (project / "plan.md").write_text("# existing plan\n")
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", "plan")
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    context.append_user_message("C1", "1.1", "my-project plan.md 수정해줘")
+    context.append("C1", "1.1", "my-project plan.md 수정해줘")
+    agent = EditAgent(_write("plan.md", ""))
+
+    response = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project 그대로 진행해줘",
+        thread_context=context,
+        agent=agent,
+        trusted_code_work=True,
+    )
+
+    assert response is not None and "안전 검사를 통과하지 못했습니다" in response
+    assert workspaces.existing("my-project", "C1", "1.1") is None
+    assert (project / "plan.md").read_text() == "# existing plan\n"
+
+
+def _draft_plan(open_question: bool = False) -> Edit:
+    mark = " " if open_question else "x"
+    questions = f"## 열린 질문\n\n- [{mark}] Q1. 정함\n"
+    return _write("docs/linear/plan.md", f"# 기획\n\n상태: 초안\n\n{questions}")
+
+
+def _planned_thread(
+    tmp_path: Path, *, open_question: bool = False
+) -> tuple[ExecutionWorkflow, ThreadWorkspaces, ThreadContextStore]:
+    _plan_first_project(tmp_path)
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    _ask_in_mode(
+        workflow, context, EditAgent(_draft_plan(open_question)), "my-project linear 개발 진행해"
+    )
+    return workflow, workspaces, context
+
+
+def test_confirming_a_plan_without_open_questions_flips_its_status_and_commits(
+    tmp_path: Path,
+) -> None:
+    workflow, workspaces, _ = _planned_thread(tmp_path)
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert worktree is not None and plan_status(worktree, "linear") == "초안"
+
+    reply = workflow.confirm_plan("C1", "1.1", "linear")
+
+    assert "확정" in reply and "docs/linear/plan.md" in reply
+    assert plan_status(worktree, "linear") == "확정"
+    assert _git(worktree, "status", "--porcelain") == ""
+    assert "기획 확정" in _git(worktree, "log", "-1", "--pretty=%s")
+
+
+def test_confirming_is_refused_while_open_questions_remain(tmp_path: Path) -> None:
+    workflow, workspaces, _ = _planned_thread(tmp_path, open_question=True)
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+
+    reply = workflow.confirm_plan("C1", "1.1", "linear")
+
+    assert "열린 질문" in reply
+    assert worktree is not None and plan_status(worktree, "linear") == "초안"
+
+
+@pytest.mark.parametrize("area", ["notion", "code"])
+def test_confirming_an_area_without_a_plan_is_refused(tmp_path: Path, area: str) -> None:
+    workflow, _, _ = _planned_thread(tmp_path)
+
+    assert "docs/" + area + "/plan.md" in workflow.confirm_plan("C1", "1.1", area)
+
+
+def test_confirming_with_no_thread_worktree_or_no_opt_in_is_refused(tmp_path: Path) -> None:
+    workflow, _, context = _edit_workflow(tmp_path)
+    assert "기획" in workflow.confirm_plan("C1", "1.1", "linear")  # no worktree yet
+
+    _git_project(tmp_path)  # a project that did not opt in
+    _ask_in_mode(workflow, context, EditAgent(_write("README.md", "x\n")), "my-project 고쳐줘")
+    assert "plan-first" in workflow.confirm_plan("C1", "1.1", "linear")
+
+
+def test_after_confirming_the_next_request_may_write_code(tmp_path: Path) -> None:
+    workflow, workspaces, context = _planned_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    agent = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    response = _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert agent.write_roots == [None]
+    assert response is not None and "`src/feature.py`" in response
+
+
+def test_an_explicit_bypass_in_this_message_lets_the_edit_write_code_before_confirmation(
+    tmp_path: Path,
+) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    response = _ask_in_mode(
+        workflow, context, agent, "my-project linear 기획 없이 바로 개발 진행해"
+    )
+
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert agent.write_roots == [None]
+    assert response is not None and "`src/feature.py`" in response
+    assert worktree is not None and (worktree / "src" / "feature.py").exists()
+
+
+def test_a_bypass_in_an_earlier_message_does_not_carry_over(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, _, context = _edit_workflow(tmp_path)
+    context.append_user_message("C1", "1.1", "my-project linear 기획 없이 개발해")
+    agent = EditAgent(_write("docs/linear/plan.md", "# 기획\n\n상태: 초안\n"))
+
+    _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert agent.write_roots == [("docs/",)]
+
+
+def test_a_bypass_still_cannot_let_the_agent_confirm_a_plan(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("docs/linear/plan.md", "# 기획\n\n상태: 확정\n"))
+
+    response = _ask_in_mode(
+        workflow, context, agent, "my-project linear docs/linear/plan.md 기획 없이 개발해"
+    )
+
+    assert response is not None and "기획 확정" in response
+    assert workspaces.existing("my-project", "C1", "1.1") is None

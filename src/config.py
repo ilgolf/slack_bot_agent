@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # Code work: "plan" (the agent proposes a plan, the workflow writes it after `실행`) or
     # "edit" (a claude_code agent edits the thread worktree directly; see resolve_code_work_mode).
-    code_work_mode: Literal["plan", "edit"] = "plan"
+    code_work_mode: Literal["analysis", "plan", "edit"] = "analysis"
     # Limits for one agent editing run (see src.claude_sdk_runner.edit_options)
     agent_edit_timeout_seconds: float = 600.0
     agent_edit_max_turns: int = 40
@@ -63,7 +63,9 @@ class Settings(BaseSettings):
 _settings: Settings | None = None
 
 
-def resolve_code_work_mode(settings: Settings) -> tuple[Literal["plan", "edit"], str | None]:
+def resolve_code_work_mode(
+    settings: Settings,
+) -> tuple[Literal["analysis", "plan", "edit"], str | None]:
     """The mode to run with, plus why it differs from the configured one.
 
     Claude Code refuses every Write/Edit under a `.claude` directory, so edit mode cannot
