@@ -243,8 +243,8 @@ Slack 요청이 분석으로 갈지 코드 작업으로 갈지를 LLM 분류기�
 - [x] `CODE_WORK_MODE`가 `analysis`를 받고, 값이 없으면 `analysis`다 (`yolo` 같은 값은 여전히 거부)
 
 ### B. 라우터
-- [ ] `RequestRouter(code_work_mode=...)`: `analysis`면 고정 명령이 아닌 메시지는 `PROJECT_ANALYSIS`, `plan`·`edit`이면 `CODE_WORK`다 (분류기는 부르지 않는다)
-- [ ] 고정 명령(`실행`·`취소`·`폐기`·스레드 요약·`Linear …`)은 어느 모드에서도 그대로다
+- [x] `RequestRouter(code_work_mode=...)`: `analysis`면 고정 명령이 아닌 메시지는 `PROJECT_ANALYSIS`, `plan`·`edit`이면 `CODE_WORK`다 (분류기는 부르지 않는다)
+- [x] 고정 명령(`실행`·`취소`·`폐기`·스레드 요약·`Linear …`)은 어느 모드에서도 그대로다
 
 ### C. 연결
 - [ ] Slack 앱이 `resolve_code_work_mode(settings)`의 결과로 라우터를 만든다 (`.claude` 아래 worktree면 `edit`가 `plan`으로 내려간 값)

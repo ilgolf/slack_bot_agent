@@ -139,3 +139,44 @@ def test_without_a_working_classifier_the_request_is_a_read_only_answer() -> Non
     assert RequestRouter(intent_classifier=_FailingClassifier()).route(text).intent is (
         RequestIntent.PROJECT_ANALYSIS
     )
+
+
+# --- Phase 24: the configured mode, not a classifier, decides every other message ------
+
+
+@pytest.mark.parametrize(
+    ("mode", "intent"),
+    [
+        ("analysis", RequestIntent.PROJECT_ANALYSIS),
+        ("plan", RequestIntent.CODE_WORK),
+        ("edit", RequestIntent.CODE_WORK),
+    ],
+)
+@pytest.mark.parametrize("text", ["plan.md 부터 짜볼래?", "이 코드 어떻게 동작해?", "고마워"])
+def test_the_configured_mode_decides_every_message_that_is_not_a_fixed_command(
+    mode: str, intent: RequestIntent, text: str
+) -> None:
+    classifier = _Classifier(RequestIntent.PROJECT_ANALYSIS)
+
+    routed = RequestRouter(intent_classifier=classifier, code_work_mode=mode).route(text)  # type: ignore[arg-type]
+
+    assert routed.intent is intent
+    assert classifier.calls == []
+
+
+@pytest.mark.parametrize("mode", ["analysis", "plan", "edit"])
+@pytest.mark.parametrize(
+    ("text", "intent"),
+    [
+        ("실행", RequestIntent.CONTROL_CONFIRM),
+        ("취소", RequestIntent.CONTROL_CANCEL),
+        ("폐기", RequestIntent.CODE_WORK),
+        ("이 스레드 요약해줘", RequestIntent.THREAD_SUMMARY),
+        ("Linear 이슈 조회", RequestIntent.LINEAR_READ),
+        ("Linear 이슈 수정 ENG-123", RequestIntent.LINEAR_MUTATION),
+    ],
+)
+def test_fixed_commands_keep_their_intent_in_every_mode(
+    mode: str, text: str, intent: RequestIntent
+) -> None:
+    assert RequestRouter(code_work_mode=mode).route(text).intent is intent  # type: ignore[arg-type]

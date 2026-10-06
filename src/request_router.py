@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from src.thread_context import ThreadWorkContext
 
@@ -61,8 +61,13 @@ class RequestRouter:
     current code request into a Linear workspace operation.
     """
 
-    def __init__(self, intent_classifier: IntentClassifier | None = None) -> None:
+    def __init__(
+        self,
+        intent_classifier: IntentClassifier | None = None,
+        code_work_mode: Literal["analysis", "plan", "edit"] | None = None,
+    ) -> None:
         self._intent_classifier = intent_classifier
+        self._code_work_mode = code_work_mode
 
     def route(
         self,
@@ -100,8 +105,15 @@ class RequestRouter:
             if _starts_with_linear_command(command_line, _LINEAR_READ):
                 return RoutedRequest(RequestIntent.LINEAR_READ, command, project_name)
 
-        # Everything else is the classifier's call; no classifier, an error or an unsure
-        # answer is a read-only answer.
+        # Everything else follows the configured mode (`CODE_WORK_MODE`); without one, the
+        # classifier's call, where no classifier, an error or an unsure answer is a
+        # read-only answer.
+        if self._code_work_mode is not None:
+            if self._code_work_mode == "analysis":
+                return RoutedRequest(RequestIntent.PROJECT_ANALYSIS, command, project_name)
+            return RoutedRequest(
+                RequestIntent.CODE_WORK, command, project_name, llm_classified=True
+            )
         if self._classified_as_code_work(command, thread_context):
             return RoutedRequest(
                 RequestIntent.CODE_WORK, command, project_name, llm_classified=True
