@@ -127,11 +127,15 @@ def _pre_tool_use_guard(
     return HookMatcher(matcher="|".join(tools), hooks=[guard])
 
 
-# Project guidance (CLAUDE.md) is read from "project" only: never "user"/"local", so
-# personal settings stay out. Project hooks run shell commands on the host, which no
-# tool guard can see, so they are switched off; the SDK's own PreToolUse guard stays.
+# Project settings come from "project" only (never "user"/"local", so personal settings
+# stay out), which is what makes the project's skills discoverable. Project hooks run shell
+# commands on the host, which no tool guard can see, so they are switched off; the SDK's own
+# PreToolUse guard stays. CLAUDE.md is developer-facing (e.g. a TDD `go` workflow) and does
+# not fit an agent that has no shell and answers in one go, so its loading is switched off;
+# Slack-specific guidance comes from `.piplup/slack.md` instead (see project_guidance).
 _PROJECT_SETTING_SOURCES: tuple[Literal["project"]] = ("project",)
 _NO_PROJECT_HOOKS = json.dumps({"disableAllHooks": True})
+_NO_CLAUDE_MD = {"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"}
 
 
 def _with_skill_tool(tools: Sequence[str], skills: Sequence[str]) -> list[str]:
@@ -155,6 +159,7 @@ def read_only_options(
         max_turns=max_turns,
         setting_sources=list(_PROJECT_SETTING_SOURCES),
         settings=_NO_PROJECT_HOOKS,
+        env=dict(_NO_CLAUDE_MD),
         permission_mode="dontAsk",
         hooks={
             "PreToolUse": [
@@ -189,6 +194,7 @@ def edit_options(
         max_budget_usd=max_budget_usd,
         setting_sources=list(_PROJECT_SETTING_SOURCES),
         settings=_NO_PROJECT_HOOKS,
+        env=dict(_NO_CLAUDE_MD),
         permission_mode="dontAsk",
         hooks={
             "PreToolUse": [

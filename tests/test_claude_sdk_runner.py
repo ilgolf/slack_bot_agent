@@ -326,6 +326,20 @@ def test_without_skills_the_skill_tool_is_absent_and_the_listing_is_empty(
     assert "Skill" not in (edit.tools or [])
 
 
+def test_read_only_and_edit_options_switch_off_the_developer_facing_claude_md(
+    tmp_path: Path,
+) -> None:
+    read_only = read_only_options(cwd=tmp_path, max_turns=7)
+    edit = edit_options(cwd=tmp_path, max_turns=40, max_budget_usd=3.0)
+
+    for options in (read_only, edit):
+        assert options.env == {"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"}
+        assert options.setting_sources == ["project"]
+        assert json.loads(options.settings or "{}") == {"disableAllHooks": True}
+    assert read_only.tools == ["Read", "Grep", "Glob"]
+    assert edit.tools == _EDIT_TOOLS
+
+
 def test_text_only_options_stay_isolated_from_project_settings() -> None:
     options = text_only_options(cwd=Path("/work/project"))
 

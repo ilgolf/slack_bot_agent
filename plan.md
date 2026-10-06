@@ -265,3 +265,27 @@ Slack 요청이 분석으로 갈지 코드 작업으로 갈지를 LLM 분류기�
 
 - [ ] `CODE_WORK_MODE=edit`에서 "plan.md 부터 짜볼래?"가 편집 경로(worktree 생성)로 간다
 - [ ] 같은 모드에서 "이 코드 어떻게 동작해?"에 파일 변경 없이 답이 온다
+
+# Phase 26: Slack 에이전트는 개발자용 `CLAUDE.md`를 읽지 않고, Slack 전용 지침을 받는다
+
+## 목표
+
+Phase 23이 프로젝트 `CLAUDE.md`를 SDK로 읽게 했더니, 이 저장소의 `go`/TDD 규칙(한 항목씩, 테스트를 돌려 확인)이 Slack 편집 에이전트에 적용되어 에이전트가 일을 쪼개거나 거절했다 (2026-10-06 스레드). 셸이 없고 한 번에 끝내야 하는 Slack 에이전트에는 맞지 않는다. 이 Phase는 Claude 실행에서 `CLAUDE.md` 로드를 끄고, Slack 에이전트용 지침은 `.piplup/slack.md`로 따로 받는다.
+
+## 결정 사항 (2026-10-06, 사용자와 합의)
+
+- `CLAUDE.md` 로드는 SDK `env`의 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`로 끈다. 스파이크: 이 값이면 `CLAUDE.md`는 로드되지 않고 skill은 로드됐다. (`claudeMdExcludes`는 `AGENTS.md`가 네이티브로 읽혀 쓰지 않는다.)
+- `setting_sources=["project"]`·`disableAllHooks`·skill 허용 목록은 그대로다.
+- Slack 전용 지침은 `.piplup/slack.md`다 (`.piplup/`은 이미 보호 경로). 있으면 `AGENTS.md`와 같은 방식으로 요청 앞에 붙고, 상한은 32KB, symlink·프로젝트 밖 경로는 무시한다.
+- Codex는 `AGENTS.md`를 CLI가 읽으므로 이번에 다루지 않는다 (한계로 기록).
+
+## 테스트 목록 (위에서부터 하나씩)
+
+- [x] 읽기 전용·편집 옵션이 `env`로 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`을 넘기고 `setting_sources`·`settings`·도구 목록은 그대로다 (텍스트 전용 옵션은 `env`가 필요 없다)
+- [ ] 프로젝트에 `.piplup/slack.md`가 있으면 그 내용이 요청 앞에 붙고 (`AGENTS.md`보다 뒤), 없거나 symlink거나 32KB를 넘으면 붙지 않는다
+- [ ] 편집 응답의 "적용 AGENTS.md" 줄이 실제로 붙은 파일(`AGENTS.md`·`.piplup/slack.md`)만 보여 준다 (`CLAUDE.md`는 더 이상 읽지 않으므로 뺀다)
+- [ ] `harness/bot.md`·README·`.env.example`을 고친다 ("CLAUDE.md는 읽지 않는다, Slack 전용 지침은 `.piplup/slack.md`")
+
+## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
+
+- [ ] 이 저장소를 대상으로 편집을 요청했을 때 `go`/TDD 규칙을 이유로 거절하지 않는다
