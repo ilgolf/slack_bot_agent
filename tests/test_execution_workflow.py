@@ -9,6 +9,7 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -3252,6 +3253,55 @@ def test_a_clean_edit_is_verified_in_the_worktree_committed_and_reported(
     assert workflow.code_work_state_store.state(channel_id="C1", thread_ts="1.1") is (
         CodeWorkState.SUCCEEDED
     )
+
+
+def _ask_in_mode(
+    workflow: ExecutionWorkflow, context: ThreadContextStore, agent: object, text: str
+) -> str | None:
+    """What the coordinator does when the configured mode routes the message as code work."""
+    return workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text=text,
+        thread_context=context,
+        agent=agent,
+        trusted_code_work=True,
+    )
+
+
+def test_an_edit_run_that_changes_nothing_answers_with_the_agents_reply(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    class Explainer(EditAgent):
+        def edit_code(self, prompt: str, worktree: Path, **kwargs: Any) -> str:
+            super().edit_code(prompt, worktree, **kwargs)
+            return "`README.md`는 프로젝트 소개 한 줄입니다."
+
+    response = _ask_in_mode(
+        workflow, context, Explainer(lambda _worktree: None), "my-project README.md 설명해줘"
+    )
+
+    assert response == "`README.md`는 프로젝트 소개 한 줄입니다."
+    assert workflow.code_work_state_store.state(channel_id="C1", thread_ts="1.1") is (
+        CodeWorkState.IDLE
+    )
+
+
+def test_an_edit_run_that_changes_nothing_and_says_nothing_reports_that(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    class Silent(EditAgent):
+        def edit_code(self, prompt: str, worktree: Path, **kwargs: Any) -> str:
+            super().edit_code(prompt, worktree, **kwargs)
+            return "  "
+
+    response = _ask_in_mode(
+        workflow, context, Silent(lambda _worktree: None), "my-project README.md 설명해줘"
+    )
+
+    assert response == "코드 에이전트가 파일을 변경하지 않았고 답변도 비어 있습니다."
 
 
 def test_an_edit_report_names_the_guidance_and_skills_the_agent_was_given(

@@ -70,6 +70,7 @@ _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
 _NO_ROLLBACK_WARNING = "롤백 불가: 이 프로젝트는 worktree로 격리할 수 없어 원본에 직접 적용됩니다."
 # Accept a Korean postposition directly after a filename (``plan.md에``)
 # while returning only the project-relative path.
+_MAX_ANSWER_CHARS = 3500  # stays under Slack's message length limit
 _PATH_IN_REQUEST = re.compile(
     r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?=$|[\s,.:!?…]|[은는이가을를에의])"
 )
@@ -1153,9 +1154,11 @@ class ExecutionWorkflow:
             return self._edit_rejected(project_name, channel_id, thread_ts, review.violations)
         if not review.changed_files:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IDLE)
+            # Nothing to review: the run was a question about the code, so its reply is the
+            # answer, not a report about an edit that never happened.
             return (
-                "코드 에이전트가 파일을 변경하지 않았습니다.\n"
-                f"에이전트 응답: {agent_text.strip()[:1500] or '(없음)'}"
+                agent_text.strip()[:_MAX_ANSWER_CHARS]
+                or "코드 에이전트가 파일을 변경하지 않았고 답변도 비어 있습니다."
             )
 
         applied_agents, applied_skills = _edit_applied_guidance(worktree)

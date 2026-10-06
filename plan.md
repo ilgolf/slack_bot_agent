@@ -253,7 +253,7 @@ Slack 요청이 분석으로 갈지 코드 작업으로 갈지를 LLM 분류기�
 - [x] `llm_intent_classifier.py`·`IntentClassifier`·라우터의 분류기 경로와 관련 테스트를 지운다 (구조 변경, 동작 변화 없음). 분류기를 흉내 내던 `tests/router_doubles.py`도 모드 기반으로 바꾼다 — 함께 `ThreadWorkContext`와 `RoutedRequest.llm_classified`(→ `mode_decided`)도 정리했다. 분류기를 흉내 내던 `CodeWorkWords`는 `tests/router_doubles.py`의 `WordGatedRouter`(plan 모드 라우터 + 작업 단어 게이트)로 바꿨다
 
 ### E. 편집 모드의 분석 답변
-- [ ] 편집 에이전트가 파일을 바꾸지 않으면 에이전트 응답을 "파일을 변경하지 않았습니다" 머리말 없이 답으로 보여 준다
+- [x] 편집 에이전트가 파일을 바꾸지 않으면 에이전트 응답을 "파일을 변경하지 않았습니다" 머리말 없이 답으로 보여 준다
 
 ### F. 편집 프롬프트
 - [ ] 편집 프롬프트가 "질문이면 코드를 읽고 답하고, 수정 요청이면 고친다"를 말한다
