@@ -247,7 +247,7 @@ Slack 요청이 분석으로 갈지 코드 작업으로 갈지를 LLM 분류기�
 - [x] 고정 명령(`실행`·`취소`·`폐기`·스레드 요약·`Linear …`)은 어느 모드에서도 그대로다
 
 ### C. 연결
-- [ ] Slack 앱이 `resolve_code_work_mode(settings)`의 결과로 라우터를 만든다 (`.claude` 아래 worktree면 `edit`가 `plan`으로 내려간 값)
+- [x] Slack 앱이 `resolve_code_work_mode(settings)`의 결과로 라우터를 만든다 (`.claude` 아래 worktree면 `edit`가 `plan`으로 내려간 값)
 
 ### D. 분류기 제거
 - [ ] `llm_intent_classifier.py`·`IntentClassifier`·라우터의 분류기 경로와 관련 테스트를 지운다 (구조 변경, 동작 변화 없음). 분류기를 흉내 내던 `tests/router_doubles.py`도 모드 기반으로 바꾼다

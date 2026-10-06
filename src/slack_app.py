@@ -14,9 +14,8 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from src.agent import AnalysisAgent
-from src.config import Settings
+from src.config import Settings, resolve_code_work_mode
 from src.linear_workflow import LinearIntegrationWorkflow
-from src.llm_intent_classifier import build_intent_classifier
 from src.observability import request_log_context
 from src.request_coordinator import RequestCoordinator
 from src.request_router import RequestIntent, RequestRouter
@@ -134,7 +133,7 @@ def start_socket_mode(
         else None
     )
     coordinator = RequestCoordinator(
-        router=RequestRouter(intent_classifier=build_intent_classifier(agent)),
+        router=RequestRouter(code_work_mode=resolve_code_work_mode(settings)[0]),
         execution_workflow=execution_workflow,
         linear_workflow=linear_workflow,
         thread_summary_workflow=thread_summary_workflow,
