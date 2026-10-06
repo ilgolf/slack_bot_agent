@@ -37,6 +37,7 @@ from src.code_work_markers import (
 )
 from src.edit_review import review_worktree
 from src.message_text import content_text
+from src.plan_first import CONFIRMED, detect_area, plan_first_enabled, plan_status
 from src.plan_guard import (
     MAX_WRITE_BYTES,
     PLAN_MAX_TOTAL_BYTES,
@@ -48,7 +49,6 @@ from src.plan_guard import (
     reject_mass_deletion,
     reject_oversized_total,
 )
-from src.plan_first import CONFIRMED, detect_area, plan_first_enabled, plan_status
 from src.project_guidance import guidance_files
 from src.project_resolver import (
     AmbiguousProject,
