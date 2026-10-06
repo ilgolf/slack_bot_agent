@@ -13,6 +13,8 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.edit_guard import is_within_roots
+from src.plan_first import CONFIRMED, is_plan_path, parse_status
 from src.plan_guard import (
     MAX_WRITE_BYTES,
     PLAN_MAX_TOTAL_BYTES,
@@ -40,8 +42,15 @@ class EditReview:
 
 
 def review_worktree(
-    git: GitCommands, worktree: Path, *, named_paths: Collection[str] = ()
+    git: GitCommands,
+    worktree: Path,
+    *,
+    named_paths: Collection[str] = (),
+    write_roots: Collection[str] | None = None,
+    plan_first: bool = False,
 ) -> EditReview:
+    """`write_roots` confine changes to those directories; `plan_first` also refuses a plan
+    the agent itself marked `확정` (only the user's `기획 확정` command may)."""
     entries = _status_entries(git, worktree)
     changed = [path for _, path in entries]
     if len(entries) > MAX_CHANGED_FILES:
@@ -58,6 +67,16 @@ def review_worktree(
     for status, path in entries:
         found = _check_entry(git, worktree, status, path, path in named)
         violations.extend(found.violations)
+        if write_roots is not None and not is_within_roots(path, write_roots):
+            violations.append(
+                f"`{path}`: 기획이 확정되기 전에는 "
+                f"{', '.join(write_roots)} 아래만 수정할 수 있습니다."
+            )
+        if plan_first and _confirmed_by_agent(git, worktree, status, path):
+            violations.append(
+                f"`{path}`: 기획 상태를 `확정`으로 바꾸는 것은 "
+                "사용자의 `기획 확정` 명령만 할 수 있습니다."
+            )
         total_bytes += found.size
         diffs.append(found.diff)
     if total_bytes > PLAN_MAX_TOTAL_BYTES:
@@ -104,6 +123,20 @@ def _check_entry(
             f"`{path}`: 기존 내용 대부분을 지우는 변경은 직접 지정한 파일만 가능합니다."
         )
     return _Checked(violations, size, _diff(git, worktree, status, path, after))
+
+
+def _confirmed_by_agent(git: GitCommands, worktree: Path, status: str, path: str) -> bool:
+    """A plan that now says `확정` although the committed version did not."""
+    if not is_plan_path(path) or "D" in status:
+        return False
+    try:
+        after = parse_status((worktree / path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return False
+    if after != CONFIRMED:
+        return False
+    before = None if status == _UNTRACKED else _head_text(git, worktree, path)
+    return before is None or parse_status(before) != CONFIRMED
 
 
 def _status_entries(git: GitCommands, worktree: Path) -> list[tuple[str, str]]:

@@ -134,3 +134,71 @@ def test_violation_messages_name_paths_but_never_file_content(worktree: Path) ->
     text = "\n".join(_review(worktree).violations)
 
     assert "TOPSECRETVALUE" not in text and "PRIVATEBODY" not in text and "one" not in text
+
+
+def _plan_first_review(worktree: Path, named: frozenset[str] = frozenset()) -> EditReview:
+    return review_worktree(
+        GitCommands(), worktree, named_paths=named, write_roots=("docs/",), plan_first=True
+    )
+
+
+def test_changes_outside_the_write_roots_are_violations(worktree: Path) -> None:
+    (worktree / "docs").mkdir()
+    (worktree / "docs" / "design.md").write_text("기획\n")
+    (worktree / "a.txt").write_text("one\nchanged\n")
+
+    review = _plan_first_review(worktree)
+
+    assert [v.split(":")[0] for v in review.violations] == ["`a.txt`"]
+    assert review.changed_files == ["a.txt", "docs/design.md"]
+
+
+def test_a_plan_the_agent_marked_confirmed_is_a_violation(worktree: Path) -> None:
+    plan = worktree / "docs" / "linear" / "plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# 기획\n\n상태: 확정\n")
+
+    review = _plan_first_review(worktree, frozenset({"docs/linear/plan.md"}))
+
+    assert len(review.violations) == 1
+    assert "docs/linear/plan.md" in review.violations[0] and "확정" in review.violations[0]
+
+
+def test_flipping_an_existing_draft_to_confirmed_is_a_violation(worktree: Path) -> None:
+    plan = worktree / "docs" / "linear" / "plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# 기획\n\n상태: 초안\n\n본문\n")
+    _git(worktree, "add", ".")
+    _git(worktree, "commit", "-q", "-m", "draft")
+    plan.write_text("# 기획\n\n상태: 확정\n\n본문\n")
+
+    review = _plan_first_review(worktree, frozenset({"docs/linear/plan.md"}))
+
+    assert len(review.violations) == 1 and "확정" in review.violations[0]
+
+
+def test_editing_a_draft_plan_or_an_already_confirmed_one_keeps_the_status_legal(
+    worktree: Path,
+) -> None:
+    plan = worktree / "docs" / "linear" / "plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# 기획\n\n상태: 초안\n\n본문\n")
+    _git(worktree, "add", ".")
+    _git(worktree, "commit", "-q", "-m", "draft")
+    plan.write_text("# 기획\n\n상태: 초안\n\n본문 보강\n")
+    assert _plan_first_review(worktree, frozenset({"docs/linear/plan.md"})).violations == []
+
+    plan.write_text("# 기획\n\n상태: 확정\n\n본문\n")
+    _git(worktree, "add", ".")
+    _git(worktree, "commit", "-q", "-m", "confirmed")
+    plan.write_text("# 기획\n\n상태: 확정\n\n본문 보강\n")
+    assert _plan_first_review(worktree, frozenset({"docs/linear/plan.md"})).violations == []
+
+
+def test_without_plan_first_nothing_about_plans_or_roots_is_checked(worktree: Path) -> None:
+    plan = worktree / "docs" / "linear" / "plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# 기획\n\n상태: 확정\n")
+    (worktree / "a.txt").write_text("one\nchanged\n")
+
+    assert _review(worktree, frozenset({"docs/linear/plan.md"})).violations == []

@@ -39,8 +39,17 @@ def plan_status(project_root: Path, area: str) -> Literal["초안", "확정"]:
         text = plan_path(project_root, area).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return DRAFT
+    return parse_status(text)
+
+
+def parse_status(text: str) -> Literal["초안", "확정"]:
     match = _STATUS_LINE.search(text)
     return CONFIRMED if match is not None and match.group(1) == CONFIRMED else DRAFT
+
+
+def is_plan_path(relative: str) -> bool:
+    """`docs/<area>/plan.md` for one of the known areas."""
+    return any(relative == f"docs/{area}/plan.md" for area in AREAS)
 
 
 def has_open_questions(text: str) -> bool:
