@@ -3899,3 +3899,44 @@ def test_after_confirming_the_next_request_may_write_code(tmp_path: Path) -> Non
 
     assert agent.write_roots == [None]
     assert response is not None and "`src/feature.py`" in response
+
+
+def test_an_explicit_bypass_in_this_message_lets_the_edit_write_code_before_confirmation(
+    tmp_path: Path,
+) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    response = _ask_in_mode(
+        workflow, context, agent, "my-project linear 기획 없이 바로 개발 진행해"
+    )
+
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert agent.write_roots == [None]
+    assert response is not None and "`src/feature.py`" in response
+    assert worktree is not None and (worktree / "src" / "feature.py").exists()
+
+
+def test_a_bypass_in_an_earlier_message_does_not_carry_over(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, _, context = _edit_workflow(tmp_path)
+    context.append_user_message("C1", "1.1", "my-project linear 기획 없이 개발해")
+    agent = EditAgent(_write("docs/linear/plan.md", "# 기획\n\n상태: 초안\n"))
+
+    _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert agent.write_roots == [("docs/",)]
+
+
+def test_a_bypass_still_cannot_let_the_agent_confirm_a_plan(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("docs/linear/plan.md", "# 기획\n\n상태: 확정\n"))
+
+    response = _ask_in_mode(
+        workflow, context, agent, "my-project linear docs/linear/plan.md 기획 없이 개발해"
+    )
+
+    assert response is not None and "기획 확정" in response
+    assert workspaces.existing("my-project", "C1", "1.1") is None

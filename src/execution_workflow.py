@@ -45,6 +45,7 @@ from src.plan_first import (
     plan_first_enabled,
     plan_path,
     plan_status,
+    wants_bypass,
     with_status,
 )
 from src.plan_guard import (
@@ -1639,6 +1640,9 @@ def _plan_first_limits(
     if not plan_first_enabled(worktree):
         return _PlanFirstLimits()
     area = detect_area([*earlier_user_messages, command_text])
+    if wants_bypass(command_text):
+        # Only this message counts: an earlier "기획 없이" does not carry over to later ones.
+        return _PlanFirstLimits(stage="bypassed", area=area)
     if area is not None and plan_status(worktree, area) == CONFIRMED:
         return _PlanFirstLimits(stage="developing", area=area)
     named = frozenset({f"docs/{area}/plan.md"}) if area is not None else frozenset()

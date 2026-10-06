@@ -12,6 +12,7 @@ from src.plan_first import (
     has_open_questions,
     plan_first_enabled,
     plan_status,
+    wants_bypass,
     with_status,
 )
 
@@ -87,3 +88,35 @@ def test_with_status_replaces_the_status_line_or_adds_one_below_the_title() -> N
     assert with_status("# 기획\n\n상태: 초안\n\n본문\n", "확정") == "# 기획\n\n상태: 확정\n\n본문\n"
     assert with_status("# 기획\n\n본문\n", "확정") == "# 기획\n상태: 확정\n\n본문\n"
     assert with_status("본문만\n", "확정") == "상태: 확정\n본문만\n"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "기획 없이 바로 개발 진행해",
+        "기획 단계 우회해서 구현해",
+        "docs 우회하고 코드 써",
+        "plan-first 우회",
+        "기획 건너뛰고 진행해",
+        "기획을 생략하고 개발해",
+        "Linear 개발, 기획 스킵",
+    ],
+)
+def test_an_explicit_request_to_skip_the_plan_is_a_bypass(text: str) -> None:
+    assert wants_bypass(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "linear 개발 진행해",
+        "기획부터 해줘",
+        "기획 우회하지 마",
+        "기획 건너뛰지 말고 진행해",
+        "기획 없이는 개발하지 마",
+        "우회 방법 알려줘",
+        "docs 정리해줘",
+    ],
+)
+def test_ordinary_or_negated_wording_is_not_a_bypass(text: str) -> None:
+    assert not wants_bypass(text)

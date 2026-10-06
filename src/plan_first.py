@@ -28,6 +28,23 @@ _AREA_MENTION = re.compile(
 )
 
 
+_BYPASS = re.compile(
+    r"(?:기획|docs|plan-first)(?:\s*단계)?\s*(?:을|를|은|는)?\s*"
+    r"(?:우회|없이(?!는)|건너뛰|건너뛴|생략|스킵|skip)",
+    re.IGNORECASE,
+)
+_NEGATION = re.compile(r"하지\s*마|하지\s*말|말고|금지")
+
+
+def wants_bypass(message: str) -> bool:
+    """The user said, in this message, to skip the plan (`기획 없이`, `기획 우회`, ...). A
+    negation right after (`우회하지 마`, `건너뛰지 말고`) is not a bypass."""
+    return any(
+        not _NEGATION.search(message[match.end() : match.end() + 10])
+        for match in _BYPASS.finditer(message)
+    )
+
+
 def plan_path(project_root: Path, area: str) -> Path:
     return project_root / "docs" / area / "plan.md"
 
