@@ -14,8 +14,8 @@ from typing import Literal
 
 AREAS = ("linear", "code", "notion")
 PLAN_FIRST_MARKER = ".piplup/plan-first"
-CONFIRMED = "확정"
-DRAFT = "초안"
+CONFIRMED: Literal["확정"] = "확정"
+DRAFT: Literal["초안"] = "초안"
 
 _STATUS_LINE = re.compile(r"^상태:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
 _OPEN_QUESTIONS_HEADING = "## 열린 질문"
