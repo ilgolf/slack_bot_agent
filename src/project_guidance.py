@@ -7,7 +7,7 @@ from pathlib import Path
 MAX_AGENTS_MD_BYTES = 32 * 1024
 
 
-def with_agents_md(prompt: str, project_root: Path) -> str:
+def with_project_guidance(prompt: str, project_root: Path) -> str:
     """Puts the project-root AGENTS.md ahead of `prompt`; a missing file, a symlink, a path
     leaving the project or a file over `MAX_AGENTS_MD_BYTES` hands over nothing."""
     path = project_root / "AGENTS.md"
