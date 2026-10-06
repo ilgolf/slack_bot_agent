@@ -140,9 +140,7 @@ def start_socket_mode(
     )
 
     @slack_app.event("app_mention")
-    def _on_app_mention(
-        event: Mapping[str, Any], say: Callable[..., Any], client: Any
-    ) -> None:
+    def _on_app_mention(event: Mapping[str, Any], say: Callable[..., Any], client: Any) -> None:
         handle_app_mention(
             event,
             say,

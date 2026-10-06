@@ -5,9 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal, Protocol
-
-from src.thread_context import ThreadWorkContext
+from typing import Literal
 
 
 class RequestIntent(StrEnum):
@@ -27,7 +25,7 @@ class RoutedRequest:
     text: str
     project_name: str | None = None
     confirmation_verb: str | None = None
-    llm_classified: bool = False
+    mode_decided: bool = False
 
 
 _MENTION = re.compile(r"<@[^>]+>")
@@ -50,10 +48,6 @@ _LINEAR_READ = (
 )
 
 
-class IntentClassifier(Protocol):
-    def classify(self, text: str, thread_context: ThreadWorkContext | None) -> RequestIntent: ...
-
-
 class RequestRouter:
     """Current-message-only grammar.
 
@@ -61,12 +55,7 @@ class RequestRouter:
     current code request into a Linear workspace operation.
     """
 
-    def __init__(
-        self,
-        intent_classifier: IntentClassifier | None = None,
-        code_work_mode: Literal["analysis", "plan", "edit"] | None = None,
-    ) -> None:
-        self._intent_classifier = intent_classifier
+    def __init__(self, code_work_mode: Literal["analysis", "plan", "edit"] = "analysis") -> None:
         self._code_work_mode = code_work_mode
 
     def route(
@@ -74,7 +63,6 @@ class RequestRouter:
         text: str,
         *,
         project_name: str | None = None,
-        thread_context: ThreadWorkContext | None = None,
     ) -> RoutedRequest:
         command = _MENTION.sub("", text).strip()
         normalized = command.casefold()
@@ -105,33 +93,10 @@ class RequestRouter:
             if _starts_with_linear_command(command_line, _LINEAR_READ):
                 return RoutedRequest(RequestIntent.LINEAR_READ, command, project_name)
 
-        # Everything else follows the configured mode (`CODE_WORK_MODE`); without one, the
-        # classifier's call, where no classifier, an error or an unsure answer is a
-        # read-only answer.
-        if self._code_work_mode is not None:
-            if self._code_work_mode == "analysis":
-                return RoutedRequest(RequestIntent.PROJECT_ANALYSIS, command, project_name)
-            return RoutedRequest(
-                RequestIntent.CODE_WORK, command, project_name, llm_classified=True
-            )
-        if self._classified_as_code_work(command, thread_context):
-            return RoutedRequest(
-                RequestIntent.CODE_WORK, command, project_name, llm_classified=True
-            )
-        return RoutedRequest(RequestIntent.PROJECT_ANALYSIS, command, project_name)
-
-    def _classified_as_code_work(
-        self, command: str, thread_context: ThreadWorkContext | None
-    ) -> bool:
-        if self._intent_classifier is None:
-            return False
-        try:
-            return self._intent_classifier.classify(command, thread_context) is (
-                RequestIntent.CODE_WORK
-            )
-        except Exception:
-            # An unavailable classifier must never break routing.
-            return False
+        # Everything else follows the configured mode (`CODE_WORK_MODE`), never the wording.
+        if self._code_work_mode == "analysis":
+            return RoutedRequest(RequestIntent.PROJECT_ANALYSIS, command, project_name)
+        return RoutedRequest(RequestIntent.CODE_WORK, command, project_name, mode_decided=True)
 
 
 def _is_thread_summary_line(command_line: str) -> bool:

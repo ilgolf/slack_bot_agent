@@ -11,9 +11,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from src.code_agent_planner import LangChainNextActionPlanner
 from src.execution_workflow import ExecutionPlan, ExecutionRisk, ExecutionStep
 from src.langchain_agent import LangChainAnalysisAgent, _parse_analysis_result
-from src.llm_intent_classifier import LlmIntentClassifier
 from src.project_resolver import ProjectResolver
-from src.request_router import RequestIntent
 
 
 def _blocks(text: str) -> list[dict[str, object]]:
@@ -66,11 +64,3 @@ def test_planner_final_answer_parses_from_block_list() -> None:
     final = LangChainNextActionPlanner._parse_final(_blocks(payload))
 
     assert final.summary == "요약"
-
-
-def test_intent_classifier_reads_block_list_answer() -> None:
-    classifier = LlmIntentClassifier(_BlockListModel("code_work"))
-
-    assert classifier.classify("이거 진행해", None) is RequestIntent.CODE_WORK
-
-
