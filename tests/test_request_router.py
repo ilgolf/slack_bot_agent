@@ -83,3 +83,29 @@ def test_fixed_commands_keep_their_intent_in_every_mode(
     mode: str, text: str, intent: RequestIntent
 ) -> None:
     assert RequestRouter(code_work_mode=mode).route(text).intent is intent  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("mode", ["analysis", "plan", "edit"])
+@pytest.mark.parametrize(
+    ("text", "area"),
+    [
+        ("기획 확정 linear", "linear"),
+        ("<@U1> 기획 확정 Notion", "notion"),
+        ("기획확정 code", "code"),
+        ("기획 확정 linear 해줘", "linear"),
+    ],
+)
+def test_the_plan_confirmation_is_a_fixed_command_carrying_its_area(
+    mode: str, text: str, area: str
+) -> None:
+    routed = RequestRouter(code_work_mode=mode).route(text)  # type: ignore[arg-type]
+
+    assert routed.intent is RequestIntent.PLAN_CONFIRM
+    assert routed.area == area
+
+
+@pytest.mark.parametrize("text", ["기획 확정", "기획 확정 foo", "linear 기획 확정하면 뭐가 돼?"])
+def test_a_plan_confirmation_needs_an_area_and_nothing_more(text: str) -> None:
+    assert RequestRouter(code_work_mode="analysis").route(text).intent is not (
+        RequestIntent.PLAN_CONFIRM
+    )

@@ -37,7 +37,16 @@ from src.code_work_markers import (
 )
 from src.edit_review import review_worktree
 from src.message_text import content_text
-from src.plan_first import CONFIRMED, detect_area, plan_first_enabled, plan_status
+from src.plan_first import (
+    CONFIRMED,
+    detect_area,
+    has_open_questions,
+    parse_status,
+    plan_first_enabled,
+    plan_path,
+    plan_status,
+    with_status,
+)
 from src.plan_guard import (
     MAX_WRITE_BYTES,
     PLAN_MAX_TOTAL_BYTES,
@@ -1299,6 +1308,40 @@ class ExecutionWorkflow:
             else "worktree를 폐기하지 못했습니다. `폐기`라고 보내 정리해 주세요."
         )
         return f"❌ 코드 에이전트의 변경이 안전 검사를 통과하지 못했습니다.\n{listed}\n{outcome}"
+
+    def confirm_plan(self, channel_id: str, thread_ts: str, area: str) -> str:
+        """The user's `기획 확정 <영역>` (plan.md Phase 28): only this code, never the agent,
+        sets an area's plan to `확정`, and only when it has no open questions left."""
+        worktree = (
+            self.workspaces.thread_worktree(channel_id, thread_ts)
+            if self.workspaces is not None
+            else None
+        )
+        if worktree is None:
+            return (
+                "확정할 기획이 없습니다. 먼저 `개발 진행해`로 이 스레드에서 기획을 쓰게 해 주세요."
+            )
+        if not plan_first_enabled(worktree):
+            return "이 프로젝트는 기획 우선 모드가 아닙니다 (`.piplup/plan-first`가 없습니다)."
+        relative = f"docs/{area}/plan.md"
+        try:
+            text = plan_path(worktree, area).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return f"`{relative}`가 없어 확정할 수 없습니다. 먼저 기획을 쓰게 해 주세요."
+        if parse_status(text) == CONFIRMED:
+            return f"`{relative}`는 이미 확정되어 있습니다."
+        if has_open_questions(text):
+            return f"`{relative}`에 열린 질문이 남아 있어 확정할 수 없습니다. 먼저 결정해 주세요."
+        assert self.workspaces is not None
+        try:
+            plan_path(worktree, area).write_text(with_status(text, CONFIRMED), encoding="utf-8")
+            self.workspaces.commit(worktree, [relative], f"기획 확정: {area}")
+        except (OSError, WorkspaceError):
+            return f"❌ `{relative}`를 확정하지 못했습니다. 파일을 확인해 주세요."
+        return (
+            f"✅ `{relative}`를 확정했습니다. 이제 같은 스레드에서 개발을 요청하면 "
+            "기획의 슬라이스를 구현합니다."
+        )
 
     def _discard(self, channel_id: str, thread_ts: str) -> str:
         none_message = "폐기할 작업 브랜치(worktree)가 없습니다."

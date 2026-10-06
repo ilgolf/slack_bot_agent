@@ -33,6 +33,7 @@ from src.execution_workflow import (
     render_code_work_status,
     render_execution_result,
 )
+from src.plan_first import plan_status
 from src.project_resolver import ProjectResolver
 from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
@@ -3829,3 +3830,72 @@ def test_blanking_a_file_named_earlier_in_the_thread_is_still_rejected(tmp_path:
     assert response is not None and "안전 검사를 통과하지 못했습니다" in response
     assert workspaces.existing("my-project", "C1", "1.1") is None
     assert (project / "plan.md").read_text() == "# existing plan\n"
+
+
+def _draft_plan(open_question: bool = False) -> Edit:
+    mark = " " if open_question else "x"
+    questions = f"## 열린 질문\n\n- [{mark}] Q1. 정함\n"
+    return _write("docs/linear/plan.md", f"# 기획\n\n상태: 초안\n\n{questions}")
+
+
+def _planned_thread(
+    tmp_path: Path, *, open_question: bool = False
+) -> tuple[ExecutionWorkflow, ThreadWorkspaces, ThreadContextStore]:
+    _plan_first_project(tmp_path)
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    _ask_in_mode(
+        workflow, context, EditAgent(_draft_plan(open_question)), "my-project linear 개발 진행해"
+    )
+    return workflow, workspaces, context
+
+
+def test_confirming_a_plan_without_open_questions_flips_its_status_and_commits(
+    tmp_path: Path,
+) -> None:
+    workflow, workspaces, _ = _planned_thread(tmp_path)
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert worktree is not None and plan_status(worktree, "linear") == "초안"
+
+    reply = workflow.confirm_plan("C1", "1.1", "linear")
+
+    assert "확정" in reply and "docs/linear/plan.md" in reply
+    assert plan_status(worktree, "linear") == "확정"
+    assert _git(worktree, "status", "--porcelain") == ""
+    assert "기획 확정" in _git(worktree, "log", "-1", "--pretty=%s")
+
+
+def test_confirming_is_refused_while_open_questions_remain(tmp_path: Path) -> None:
+    workflow, workspaces, _ = _planned_thread(tmp_path, open_question=True)
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+
+    reply = workflow.confirm_plan("C1", "1.1", "linear")
+
+    assert "열린 질문" in reply
+    assert worktree is not None and plan_status(worktree, "linear") == "초안"
+
+
+@pytest.mark.parametrize("area", ["notion", "code"])
+def test_confirming_an_area_without_a_plan_is_refused(tmp_path: Path, area: str) -> None:
+    workflow, _, _ = _planned_thread(tmp_path)
+
+    assert "docs/" + area + "/plan.md" in workflow.confirm_plan("C1", "1.1", area)
+
+
+def test_confirming_with_no_thread_worktree_or_no_opt_in_is_refused(tmp_path: Path) -> None:
+    workflow, _, context = _edit_workflow(tmp_path)
+    assert "기획" in workflow.confirm_plan("C1", "1.1", "linear")  # no worktree yet
+
+    _git_project(tmp_path)  # a project that did not opt in
+    _ask_in_mode(workflow, context, EditAgent(_write("README.md", "x\n")), "my-project 고쳐줘")
+    assert "plan-first" in workflow.confirm_plan("C1", "1.1", "linear")
+
+
+def test_after_confirming_the_next_request_may_write_code(tmp_path: Path) -> None:
+    workflow, workspaces, context = _planned_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    agent = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    response = _ask_in_mode(workflow, context, agent, "my-project linear 개발 진행해")
+
+    assert agent.write_roots == [None]
+    assert response is not None and "`src/feature.py`" in response

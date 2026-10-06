@@ -11,7 +11,7 @@ from src.execution_workflow import ExecutionPlan, ExecutionRisk, ExecutionStep, 
 from src.linear_workflow import LinearIntegrationWorkflow
 from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
-from src.request_router import RequestRouter
+from src.request_router import RequestIntent, RequestRouter
 from src.thread_context import ThreadContextStore
 from tests.router_doubles import WordGatedRouter
 
@@ -458,3 +458,33 @@ def test_instruction_inside_data_the_bot_read_is_not_recorded_as_a_user_message(
 
     assert "plan.md 수정해줘" in reply
     assert context.user_messages("C1", "1.1") == ["이슈 내용 알려줘"]
+
+
+def test_the_plan_confirmation_command_reaches_the_workflow_in_every_mode(
+    tmp_path: Path,
+) -> None:
+    class Recorder(ExecutionWorkflow):
+        def confirm_plan(self, channel_id: str, thread_ts: str, area: str) -> str:
+            self.confirmed = (channel_id, thread_ts, area)
+            return "확정 응답"
+
+    workflow = Recorder(project_resolver=ProjectResolver(root=tmp_path))
+    coordinator = RequestCoordinator(
+        router=RequestRouter(code_work_mode="analysis"),
+        execution_workflow=workflow,
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
+    context = ThreadContextStore(root=tmp_path / "context")
+
+    routed, reply = coordinator.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="<@U1> 기획 확정 linear",
+        thread_context=context,
+        agent=TraceAgent(),  # type: ignore[arg-type]
+    )
+
+    assert routed.intent is RequestIntent.PLAN_CONFIRM
+    assert reply == "확정 응답"
+    assert workflow.confirmed == ("C1", "1.1", "linear")
+    assert context.user_messages("C1", "1.1") == ["<@U1> 기획 확정 linear"]

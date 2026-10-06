@@ -47,6 +47,18 @@ def parse_status(text: str) -> Literal["초안", "확정"]:
     return CONFIRMED if match is not None and match.group(1) == CONFIRMED else DRAFT
 
 
+def with_status(text: str, status: str) -> str:
+    """`text` with its `상태:` line set to `status`; a plan without one gets the line right
+    below its title (or at the top when it has no title)."""
+    line = f"상태: {status}"
+    if _STATUS_LINE.search(text):
+        return _STATUS_LINE.sub(line, text, count=1)
+    lines = text.split("\n")
+    if lines and lines[0].startswith("#"):
+        return "\n".join([lines[0], line, *lines[1:]])
+    return f"{line}\n{text}"
+
+
 def is_plan_path(relative: str) -> bool:
     """`docs/<area>/plan.md` for one of the known areas."""
     return any(relative == f"docs/{area}/plan.md" for area in AREAS)

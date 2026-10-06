@@ -281,3 +281,13 @@ def test_discard_removes_the_worktree_and_branch_but_not_the_original(
     assert str(path) not in _git(repo, "worktree", "list")
     assert (repo / "a.txt").read_text() == "one\n"
     assert workspaces.discard(repo, "demo", "C1", "1.1") is False
+
+
+def test_thread_worktree_finds_a_threads_worktree_without_knowing_its_project(
+    repo: Path, workspaces: ThreadWorkspaces
+) -> None:
+    created = workspaces.ensure(repo, "demo", "C1", "1.1")
+
+    assert workspaces.thread_worktree("C1", "1.1") == created
+    assert workspaces.thread_worktree("C1", "9.9") is None
+    assert ThreadWorkspaces(repo.parent / "missing").thread_worktree("C1", "1.1") is None

@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from src.plan_first import detect_area, has_open_questions, plan_first_enabled, plan_status
+from src.plan_first import (
+    detect_area,
+    has_open_questions,
+    plan_first_enabled,
+    plan_status,
+    with_status,
+)
 
 
 def _plan(root: Path, area: str, text: str) -> None:
@@ -75,3 +81,9 @@ def test_plan_first_is_opt_in_by_a_plain_marker_file(tmp_path: Path) -> None:
     outside.write_text("", encoding="utf-8")
     marker.symlink_to(outside)
     assert not plan_first_enabled(tmp_path)
+
+
+def test_with_status_replaces_the_status_line_or_adds_one_below_the_title() -> None:
+    assert with_status("# 기획\n\n상태: 초안\n\n본문\n", "확정") == "# 기획\n\n상태: 확정\n\n본문\n"
+    assert with_status("# 기획\n\n본문\n", "확정") == "# 기획\n상태: 확정\n\n본문\n"
+    assert with_status("본문만\n", "확정") == "상태: 확정\n본문만\n"
