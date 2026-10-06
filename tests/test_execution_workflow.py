@@ -3312,6 +3312,7 @@ def test_an_edit_report_names_the_guidance_and_skills_the_agent_was_given(
     (project / "CLAUDE.md").write_text("규칙\n")
     (project / ".piplup").mkdir()
     (project / ".piplup" / "allowed-skills.txt").write_text("claude:spike-skill\ncodex-only\n")
+    (project / ".piplup" / "slack.md").write_text("Slack 전용 규칙\n")
     skill = project / ".claude" / "skills" / "spike-skill"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: spike-skill\n---\n")
@@ -3327,7 +3328,8 @@ def test_an_edit_report_names_the_guidance_and_skills_the_agent_was_given(
     )
 
     assert response is not None
-    assert "적용 AGENTS.md: `AGENTS.md`, `CLAUDE.md`" in response
+    # CLAUDE.md is present but never read, so it is not reported as applied.
+    assert "적용 AGENTS.md: `AGENTS.md`, `.piplup/slack.md`" in response
     assert "적용 Skill: `claude:spike-skill`" in response
 
 

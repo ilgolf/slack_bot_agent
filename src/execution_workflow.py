@@ -48,6 +48,7 @@ from src.plan_guard import (
     reject_mass_deletion,
     reject_oversized_total,
 )
+from src.project_guidance import guidance_files
 from src.project_resolver import (
     AmbiguousProject,
     InvalidProjectName,
@@ -1553,13 +1554,13 @@ def _render_diff_excerpt(diff: str, *, max_lines: int = 12) -> str:
 
 
 def _edit_applied_guidance(worktree: Path) -> tuple[list[str], list[str]]:
-    """What the Claude edit run was actually given: the root AGENTS.md (handed over in
-    the prompt), CLAUDE.md (read by the SDK) and the allowlisted project skills."""
+    """What the Claude edit run was actually given: the guidance files handed over in the
+    prompt (CLAUDE.md is not read) and the allowlisted project skills."""
 
     def is_plain_file(path: Path) -> bool:
         return path.is_file() and not path.is_symlink()
 
-    agents = [name for name in ("AGENTS.md", "CLAUDE.md") if is_plain_file(worktree / name)]
+    agents = guidance_files(worktree)
     skills = [
         f"claude:{name}"
         for name in claude_skill_names(worktree)

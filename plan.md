@@ -283,7 +283,7 @@ Phase 23이 프로젝트 `CLAUDE.md`를 SDK로 읽게 했더니, 이 저장소�
 
 - [x] 읽기 전용·편집 옵션이 `env`로 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`을 넘기고 `setting_sources`·`settings`·도구 목록은 그대로다 (텍스트 전용 옵션은 `env`가 필요 없다)
 - [x] 프로젝트에 `.piplup/slack.md`가 있으면 그 내용이 요청 앞에 붙고 (`AGENTS.md`보다 뒤), 없거나 symlink거나 32KB를 넘으면 붙지 않는다
-- [ ] 편집 응답의 "적용 AGENTS.md" 줄이 실제로 붙은 파일(`AGENTS.md`·`.piplup/slack.md`)만 보여 준다 (`CLAUDE.md`는 더 이상 읽지 않으므로 뺀다)
+- [x] 편집 응답의 "적용 AGENTS.md" 줄이 실제로 붙은 파일(`AGENTS.md`·`.piplup/slack.md`)만 보여 준다 (`CLAUDE.md`는 더 이상 읽지 않으므로 뺀다)
 - [ ] `harness/bot.md`·README·`.env.example`을 고친다 ("CLAUDE.md는 읽지 않는다, Slack 전용 지침은 `.piplup/slack.md`")
 
 ## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
