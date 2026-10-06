@@ -220,3 +220,48 @@
 - 이 봇 저장소의 `CLAUDE.md`에는 개발자용 규칙(`go`, TDD)이 있다. `slack_bot_agent`를 대상으로 편집하면 그 규칙이 Slack 에이전트에 적용된다 — 의도한 결과인지 확인이 필요하다.
 - skill 파일은 지침이지 샌드박스가 아니다 (SDK 문서: 켜지 않은 skill도 파일은 디스크에 남아 `Read`로 읽힌다). 경계는 코드(가드·worktree)에 있다.
 - Codex 쪽은 SDK 기능이 아니라 CLI 동작에 기대므로 Claude와 같게 동작한다고 보장하지 못한다.
+
+# Phase 24: 모드는 `.env`가 정한다 — LLM 분류기를 걷어낸다
+
+## 목표
+
+Slack 요청이 분석으로 갈지 코드 작업으로 갈지를 LLM 분류기가 정해서, `CODE_WORK_MODE=edit`여도 "plan.md 부터 짜볼래?"가 읽기 전용 분석으로 빠졌다 (2026-10-06 로그: `intent=project_analysis`, 편집 경로 미진입). 이 Phase는 모드를 `.env`의 `CODE_WORK_MODE` 하나로만 정하고 분류기를 코드에서 제거한다.
+
+## 결정 사항 (2026-10-06, 사용자 지시: "LLM 분류기 걷어내 그냥")
+
+- `CODE_WORK_MODE`는 `analysis | plan | edit`이다. 기본값은 `analysis`(읽기 전용)다 — 안전한 쪽이 기본이다.
+- 고정 명령(`실행`·`취소`·`폐기`·`trace 요약`·스레드 요약·`Linear …`)은 지금처럼 코드가 정한다. 그 밖의 메시지는 모드가 정한다:
+  - `analysis`: 모두 읽기 전용 분석.
+  - `plan`: 모두 코드 작업 → 계획을 만들고 `실행` 확인 (Claude·Codex 모두 같은 경로).
+  - `edit`: 모두 코드 작업 → worktree에서 직접 편집. 편집 에이전트는 코드를 읽고 분석할 수도 있어야 한다 (파일을 바꾸지 않으면 그 응답이 곧 답이다).
+- 결과: `plan`·`edit` 모드에서는 잡담이나 질문도 코드 작업으로 들어가 프로젝트명을 되묻는다. 질문 위주로 쓰려면 `analysis`로 둔다.
+- 안전(도구 목록·`edit_guard`·`review_worktree`·worktree 격리)은 바꾸지 않는다.
+
+## 테스트 목록 (위에서부터 하나씩)
+
+### A. 설정
+- [x] `CODE_WORK_MODE`가 `analysis`를 받고, 값이 없으면 `analysis`다 (`yolo` 같은 값은 여전히 거부)
+
+### B. 라우터
+- [ ] `RequestRouter(code_work_mode=...)`: `analysis`면 고정 명령이 아닌 메시지는 `PROJECT_ANALYSIS`, `plan`·`edit`이면 `CODE_WORK`다 (분류기는 부르지 않는다)
+- [ ] 고정 명령(`실행`·`취소`·`폐기`·스레드 요약·`Linear …`)은 어느 모드에서도 그대로다
+
+### C. 연결
+- [ ] Slack 앱이 `resolve_code_work_mode(settings)`의 결과로 라우터를 만든다 (`.claude` 아래 worktree면 `edit`가 `plan`으로 내려간 값)
+
+### D. 분류기 제거
+- [ ] `llm_intent_classifier.py`·`IntentClassifier`·라우터의 분류기 경로와 관련 테스트를 지운다 (구조 변경, 동작 변화 없음). 분류기를 흉내 내던 `tests/router_doubles.py`도 모드 기반으로 바꾼다
+
+### E. 편집 모드의 분석 답변
+- [ ] 편집 에이전트가 파일을 바꾸지 않으면 에이전트 응답을 "파일을 변경하지 않았습니다" 머리말 없이 답으로 보여 준다
+
+### F. 편집 프롬프트
+- [ ] 편집 프롬프트가 "질문이면 코드를 읽고 답하고, 수정 요청이면 고친다"를 말한다
+
+### G. 문서
+- [ ] `harness/bot.md`·README·`.env.example`에 세 모드와 "잡담도 코드 작업으로 들어간다"를 적는다
+
+## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
+
+- [ ] `CODE_WORK_MODE=edit`에서 "plan.md 부터 짜볼래?"가 편집 경로(worktree 생성)로 간다
+- [ ] 같은 모드에서 "이 코드 어떻게 동작해?"에 파일 변경 없이 답이 온다

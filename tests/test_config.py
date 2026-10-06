@@ -109,7 +109,7 @@ def test_edit_mode_settings_have_safe_defaults(
 
     settings = Settings()
 
-    assert settings.code_work_mode == "plan"
+    assert settings.code_work_mode == "analysis"
     assert settings.agent_edit_timeout_seconds == 600.0
     assert settings.agent_edit_max_turns == 40
     assert settings.agent_edit_max_budget_usd == 3.0
@@ -132,6 +132,16 @@ def test_edit_mode_settings_read_from_environment(
         settings.agent_edit_max_turns,
         settings.agent_edit_max_budget_usd,
     ) == (120.0, 12, 0.5)
+
+
+def test_analysis_is_an_accepted_code_work_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODE_WORK_MODE", "analysis")
+    monkeypatch.chdir(tmp_path)
+
+    assert Settings().code_work_mode == "analysis"
+    assert resolve_code_work_mode(Settings()) == ("analysis", None)
 
 
 def test_an_unknown_code_work_mode_is_rejected(
