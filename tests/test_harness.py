@@ -56,5 +56,7 @@ def test_the_shipped_guidance_tells_how_to_word_a_work_request() -> None:
         "한 번에 한 단계",
         "설계 문서",
         "테스트·린트를 실행하지 못합니다",
+        "기획 확정 <영역>",
+        "docs/README.md",
     ):
         assert point in guidance

@@ -356,7 +356,7 @@ Slack 에이전트에게 일을 시키는 데에는 요령이 있다 (2026-10-06
 - [x] 열린 질문이 남았거나 기획이 없으면 거절하고, 아니면 스레드 worktree의 `상태:`를 `확정`으로 바꿔 커밋하고 알린다
 
 ### E. 문서
-- [ ] `docs/README.md`(규칙·영역·상태 줄·템플릿)를 만들고 `harness/requests.md`·`harness/bot.md`·README에 "개발 진행해 → 기획 → 확정 → 개발"을 적는다
+- [x] `docs/README.md`(규칙·영역·상태 줄·템플릿)를 만들고 `harness/requests.md`·`harness/bot.md`·README에 "개발 진행해 → 기획 → 확정 → 개발"을 적는다
 
 ## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
 
