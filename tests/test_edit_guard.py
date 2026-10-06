@@ -219,3 +219,31 @@ def test_malformed_or_failing_judgements_are_denied_not_raised(
     worktree: Path, tool: str, tool_input: object
 ) -> None:
     assert is_allowed_tool_call(worktree, tool, tool_input) is False  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("tool", ["Write", "Edit"])
+def test_write_roots_limit_edits_to_those_directories(worktree: Path, tool: str) -> None:
+    roots = ("docs/",)
+
+    for inside in ("docs/linear/pev.md", str(worktree / "docs" / "code" / "design.md")):
+        assert is_allowed_edit(worktree, tool, _call(tool, inside), write_roots=roots)
+        assert is_allowed_tool_call(worktree, tool, _call(tool, inside), write_roots=roots)
+    for outside in ("src/a.py", "a.py", "docs_old/x.md", "../x.md", "docs/../src/a.py"):
+        assert not is_allowed_edit(worktree, tool, _call(tool, outside), write_roots=roots)
+        assert not is_allowed_tool_call(worktree, tool, _call(tool, outside), write_roots=roots)
+
+
+def test_write_roots_do_not_limit_reads_and_none_means_no_limit(worktree: Path) -> None:
+    assert is_allowed_tool_call(
+        worktree, "Read", {"file_path": str(worktree / "a.py")}, write_roots=("docs/",)
+    )
+    assert is_allowed_edit(worktree, "Write", _call("Write", "src/a.py"), write_roots=None)
+
+
+def test_write_roots_do_not_unlock_guarded_files(worktree: Path) -> None:
+    assert not is_allowed_edit(
+        worktree, "Write", _call("Write", "docs/CLAUDE.md"), write_roots=("docs/",)
+    )
+    assert not is_allowed_edit(
+        worktree, "Write", _call("Write", "docs/.env"), write_roots=("docs/",)
+    )

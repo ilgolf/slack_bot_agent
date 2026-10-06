@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
@@ -179,13 +179,16 @@ class CodeAgentAnalysisAgent:
         *,
         project_name: str,
         named_paths: frozenset[str] = frozenset(),
+        write_roots: Collection[str] | None = None,
         channel_id: str = "-",
         thread_ts: str = "-",
     ) -> str:
-        """Let the runner edit files inside `worktree`; returns the agent's final text."""
+        """Let the runner edit files inside `worktree`; returns the agent's final text.
+        `write_roots`, when given, limit the edit to those directories."""
         edit = getattr(self.runner, "edit", None)
         if not callable(edit):
             raise AnalysisAgentError("이 코드 에이전트는 파일 편집을 지원하지 않습니다.")
+        limits = {} if write_roots is None else {"write_roots": write_roots}
         return self._traced(
             "edit",
             project_name,
@@ -199,6 +202,7 @@ class CodeAgentAnalysisAgent:
                     max_turns=self.edit_max_turns,
                     max_budget_usd=self.edit_max_budget_usd,
                     named_paths=named_paths,
+                    **limits,
                 ).text
             ),
         )

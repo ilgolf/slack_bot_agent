@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -66,12 +66,14 @@ class ClaudeSdkRunner:
         max_turns: int,
         max_budget_usd: float,
         named_paths: frozenset[str] = frozenset(),
+        write_roots: Collection[str] | None = None,
     ) -> RunnerResult:
         options = edit_options(
             cwd=cwd,
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
             named_paths=named_paths,
+            write_roots=write_roots,
             skills=claude_skill_names(cwd),
         )
         return self._execute(with_project_guidance(prompt, Path(cwd)), options, timeout_seconds)
@@ -179,6 +181,7 @@ def edit_options(
     max_turns: int,
     max_budget_usd: float,
     named_paths: frozenset[str] = frozenset(),
+    write_roots: Collection[str] | None = None,
     skills: Sequence[str] = (),
 ) -> ClaudeAgentOptions:
     """Edit mode: file tools only (no shell), every call judged by `edit_guard` before it
@@ -200,7 +203,11 @@ def edit_options(
             "PreToolUse": [
                 _pre_tool_use_guard(
                     lambda tool, tool_input: is_allowed_tool_call(
-                        worktree, tool, tool_input, named_paths=named_paths
+                        worktree,
+                        tool,
+                        tool_input,
+                        named_paths=named_paths,
+                        write_roots=write_roots,
                     ),
                     "이 작업은 허용되지 않습니다.",
                     _EDIT_TOOLS,

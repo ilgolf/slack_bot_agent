@@ -429,6 +429,49 @@ def test_project_guidance_telling_the_agent_to_edit_protected_files_does_not_ope
     assert decision("README.md") == {}
 
 
+def test_edit_hook_keeps_writes_inside_the_write_roots_when_given(tmp_path: Path) -> None:
+    options = edit_options(cwd=tmp_path, max_turns=1, max_budget_usd=1.0, write_roots=("docs/",))
+    hook = (options.hooks or {})["PreToolUse"][0].hooks[0]
+
+    def decision(path: str) -> dict[str, object]:
+        event = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": path, "content": "x"},
+        }
+        return asyncio.run(hook(event, "id", {"signal": None}))  # type: ignore[arg-type]
+
+    assert decision("docs/linear/pev.md") == {}
+    denied = decision("src/a.py")
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
+
+
+def test_edit_passes_write_roots_to_the_options(tmp_path: Path) -> None:
+    seen: list[ClaudeAgentOptions] = []
+
+    async def fake_query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]:
+        seen.append(options)
+        yield _result_message("done")
+
+    ClaudeSdkRunner(query=fake_query).edit(
+        "기획해",
+        cwd=tmp_path,
+        timeout_seconds=30.0,
+        max_turns=5,
+        max_budget_usd=1.0,
+        write_roots=("docs/",),
+    )
+    hook = (seen[0].hooks or {})["PreToolUse"][0].hooks[0]
+    event = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": "src/a.py", "content": "x"},
+    }
+    denied = asyncio.run(hook(event, "id", {"signal": None}))  # type: ignore[arg-type]
+
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
+
+
 def test_edit_limits_come_from_the_arguments(tmp_path: Path) -> None:
     seen: list[ClaudeAgentOptions] = []
 

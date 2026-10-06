@@ -495,6 +495,17 @@ def test_edit_code_runs_the_runner_edit_in_the_worktree_with_the_configured_limi
     assert runner.calls == [] and runner.complete_calls == []
 
 
+def test_edit_code_hands_write_roots_to_the_runner_only_when_given(tmp_path: Path) -> None:
+    runner = FakeEditRunner()
+    agent = _edit_agent(tmp_path, runner)
+
+    agent.edit_code("기획해", tmp_path / "wt", project_name="demo", write_roots=("docs/",))
+    agent.edit_code("수정해", tmp_path / "wt", project_name="demo")
+
+    assert runner.edit_calls[0]["write_roots"] == ("docs/",)
+    assert "write_roots" not in runner.edit_calls[1]
+
+
 @pytest.mark.parametrize("error", [RunnerTimeout(), RunnerError("SECRET sdk output")])
 def test_edit_code_hides_runner_failures(tmp_path: Path, error: Exception) -> None:
     agent = _edit_agent(tmp_path, FakeEditRunner(edit_error=error))
