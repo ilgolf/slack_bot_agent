@@ -33,7 +33,7 @@ from src.execution_workflow import (
     render_code_work_status,
     render_execution_result,
 )
-from src.plan_first import plan_status
+from src.plan_first import PlanAnswer, plan_status
 from src.project_resolver import ProjectResolver
 from src.run_state import CodeWorkState, CodeWorkStateStore
 from src.thread_context import ThreadContextStore
@@ -3864,7 +3864,7 @@ def test_confirming_a_plan_without_open_questions_flips_its_status_and_commits(
     assert "기획 확정" in _git(worktree, "log", "-1", "--pretty=%s")
 
 
-def test_confirming_is_refused_while_open_questions_remain(tmp_path: Path) -> None:
+def test_confirming_does_not_confirm_while_open_questions_remain(tmp_path: Path) -> None:
     workflow, workspaces, _ = _planned_thread(tmp_path, open_question=True)
     worktree = workspaces.existing("my-project", "C1", "1.1")
 
@@ -3960,3 +3960,219 @@ def test_the_developing_prompt_does_not_carry_the_plan_document_rules(tmp_path: 
     _ask_in_mode(workflow, context, developing, "my-project linear 개발 진행해")
 
     assert "[기획 문서 규칙]" not in developing.prompts[0]
+
+
+# --- Phase 31: the plan review dialogue --------------------------------------------------
+
+_REVIEW_PLAN = """# 기획
+
+상태: 초안
+
+## 열린 질문
+
+- [ ] Q2. 쓰기를 몇 개 허용할까?
+  추천: 1개
+- [ ] Q3. 플래그 기본값은?
+  추천: 꺼짐
+- [ ] Q4. 추천이 없는 질문
+"""
+
+
+def _review_thread(
+    tmp_path: Path, plan: str = _REVIEW_PLAN
+) -> tuple[ExecutionWorkflow, Path, ThreadContextStore]:
+    _plan_first_project(tmp_path)
+    workflow, workspaces, context = _edit_workflow(tmp_path)
+    _ask_in_mode(
+        workflow, context, EditAgent(_write("docs/linear/plan.md", plan)), "my-project linear 기획"
+    )
+    worktree = workspaces.existing("my-project", "C1", "1.1")
+    assert worktree is not None
+    return workflow, worktree, context
+
+
+def _answer(workflow: ExecutionWorkflow, kind: str, text: str = "") -> str:
+    return workflow.answer_plan_review("C1", "1.1", PlanAnswer(kind, text))  # type: ignore[arg-type]
+
+
+def _subjects(worktree: Path) -> list[str]:
+    return _git(worktree, "log", "--pretty=%s").splitlines()
+
+
+def test_confirming_a_plan_with_open_questions_starts_a_review_with_the_first_question(
+    tmp_path: Path,
+) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path)
+
+    reply = workflow.confirm_plan("C1", "1.1", "linear")
+
+    assert "Q2" in reply and "쓰기를 몇 개 허용할까?" in reply and "추천: 1개" in reply
+    assert "추천대로" in reply and "결정:" in reply and "보류" in reply and "중단" in reply
+    assert plan_status(worktree, "linear") == "초안"
+
+
+def test_a_recommended_answer_is_recorded_committed_and_the_next_question_is_asked(
+    tmp_path: Path,
+) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+
+    reply = _answer(workflow, "recommended")
+
+    text = (worktree / "docs" / "linear" / "plan.md").read_text()
+    assert "- [x] Q2. 쓰기를 몇 개 허용할까?\n  추천: 1개\n  결정: 1개\n" in text
+    assert "Q3" in reply and "플래그 기본값은?" in reply
+    assert _subjects(worktree)[0] == "bot: 기획 결정: linear Q2"
+    assert _git(worktree, "status", "--porcelain") == ""
+
+
+def test_a_typed_decision_is_recorded_as_given(tmp_path: Path) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+
+    _answer(workflow, "decision", "여러 개 허용하되 확인은 한 번")
+
+    text = (worktree / "docs" / "linear" / "plan.md").read_text()
+    assert "  결정: 여러 개 허용하되 확인은 한 번\n" in text and "- [x] Q2." in text
+
+
+def test_an_empty_or_too_long_decision_is_refused_and_nothing_is_recorded(
+    tmp_path: Path,
+) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    before = (worktree / "docs" / "linear" / "plan.md").read_text()
+
+    for bad in ("", "가" * 301):
+        assert "300자" in _answer(workflow, "decision", bad)
+
+    assert (worktree / "docs" / "linear" / "plan.md").read_text() == before
+
+
+def test_recommended_is_refused_for_a_question_without_a_recommendation(tmp_path: Path) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    _answer(workflow, "recommended")
+    _answer(workflow, "recommended")  # Q4 is now current: it has no recommendation
+
+    reply = _answer(workflow, "recommended")
+
+    assert "추천이 없" in reply and "결정:" in reply
+    assert "- [ ] Q4." in (worktree / "docs" / "linear" / "plan.md").read_text()
+
+
+def test_hold_leaves_the_question_open_and_moves_on(tmp_path: Path) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+
+    reply = _answer(workflow, "hold")
+
+    assert "Q3" in reply
+    assert "- [ ] Q2." in (worktree / "docs" / "linear" / "plan.md").read_text()
+
+
+def test_when_only_held_questions_remain_the_review_ends_and_says_so(tmp_path: Path) -> None:
+    workflow, _, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    _answer(workflow, "hold")
+    _answer(workflow, "hold")
+    reply = _answer(workflow, "hold")
+
+    assert "보류" in reply and "기획 확정 linear" in reply
+    assert "진행 중인 기획 검토가 없습니다" in _answer(workflow, "recommended")
+
+
+def test_the_rest_can_be_taken_as_recommended_with_one_commit_per_answer(
+    tmp_path: Path,
+) -> None:
+    plan = _REVIEW_PLAN.replace("- [ ] Q4. 추천이 없는 질문\n", "- [ ] Q4. 마지막\n  추천: 유지\n")
+    workflow, worktree, _ = _review_thread(plan=plan, tmp_path=tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+
+    reply = _answer(workflow, "all_recommended")
+
+    text = (worktree / "docs" / "linear" / "plan.md").read_text()
+    assert "3개" in reply and "기획 확정 linear" in reply
+    assert "  결정: 1개\n" in text and "  결정: 꺼짐\n" in text and "  결정: 유지\n" in text
+    assert _subjects(worktree)[:3] == [
+        "bot: 기획 결정: linear Q4",
+        "bot: 기획 결정: linear Q3",
+        "bot: 기획 결정: linear Q2",
+    ]
+
+
+def test_the_rest_is_refused_while_a_remaining_question_has_no_recommendation(
+    tmp_path: Path,
+) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    before = (worktree / "docs" / "linear" / "plan.md").read_text()
+
+    reply = _answer(workflow, "all_recommended")
+
+    assert "Q4" in reply and "추천이 없" in reply
+    assert (worktree / "docs" / "linear" / "plan.md").read_text() == before
+
+
+def test_stopping_ends_the_review_but_keeps_what_was_decided(tmp_path: Path) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    _answer(workflow, "recommended")
+
+    reply = _answer(workflow, "stop")
+
+    assert "2개" in reply and "기획 확정 linear" in reply
+    assert "  결정: 1개\n" in (worktree / "docs" / "linear" / "plan.md").read_text()
+    assert "진행 중인 기획 검토가 없습니다" in _answer(workflow, "recommended")
+
+
+def test_after_the_last_answer_the_user_confirms_with_one_more_message(tmp_path: Path) -> None:
+    plan = _REVIEW_PLAN.replace("- [ ] Q3. 플래그 기본값은?\n  추천: 꺼짐\n", "").replace(
+        "- [ ] Q4. 추천이 없는 질문\n", ""
+    )
+    workflow, worktree, _ = _review_thread(plan=plan, tmp_path=tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+
+    done = _answer(workflow, "recommended")
+
+    assert "모든 열린 질문이 정해졌습니다" in done and "기획 확정 linear" in done
+    assert plan_status(worktree, "linear") == "초안"
+    assert "확정했습니다" in workflow.confirm_plan("C1", "1.1", "linear")
+    assert plan_status(worktree, "linear") == "확정"
+
+
+def test_an_answer_without_a_review_is_told_how_to_start_one(tmp_path: Path) -> None:
+    workflow, _, _ = _review_thread(tmp_path)
+
+    assert "진행 중인 기획 검토가 없습니다" in _answer(workflow, "recommended")
+
+
+def test_a_review_that_lost_its_state_resumes_from_the_documents_open_questions(
+    tmp_path: Path,
+) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    _answer(workflow, "recommended")
+    restarted = ExecutionWorkflow(
+        project_resolver=ProjectResolver(root=tmp_path),
+        workspaces=ThreadWorkspaces(tmp_path / "worktrees"),
+        code_work_mode="edit",
+    )
+
+    assert "진행 중인 기획 검토가 없습니다" in _answer(restarted, "recommended")
+    reply = restarted.confirm_plan("C1", "1.1", "linear")
+
+    assert "Q3" in reply and "Q2" not in reply
+    assert "  결정: 1개\n" in (worktree / "docs" / "linear" / "plan.md").read_text()
+
+
+def test_a_review_expires_after_half_an_hour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr("src.execution_workflow.time.monotonic", lambda: clock[0])
+    workflow, _, _ = _review_thread(tmp_path)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    clock[0] += 31 * 60
+
+    assert "진행 중인 기획 검토가 없습니다" in _answer(workflow, "recommended")
