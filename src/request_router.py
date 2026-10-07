@@ -7,11 +7,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
+from src.plan_first import PlanAnswer, parse_answer
+
 
 class RequestIntent(StrEnum):
     CONTROL_CONFIRM = "control_confirm"
     CONTROL_CANCEL = "control_cancel"
     PLAN_CONFIRM = "plan_confirm"
+    PLAN_ANSWER = "plan_answer"
     CODE_WORK = "code_work"
     LINEAR_READ = "linear_read"
     LINEAR_MUTATION = "linear_mutation"
@@ -28,6 +31,7 @@ class RoutedRequest:
     confirmation_verb: str | None = None
     mode_decided: bool = False
     area: str | None = None
+    plan_answer: PlanAnswer | None = None
 
 
 _MENTION = re.compile(r"<@[^>]+>")
@@ -84,6 +88,11 @@ class RequestRouter:
             return RoutedRequest(RequestIntent.CONTROL_CANCEL, command, project_name, "취소")
         if _DISCARD.fullmatch(command):
             return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
+        plan_answer = parse_answer(command)
+        if plan_answer is not None:
+            return RoutedRequest(
+                RequestIntent.PLAN_ANSWER, command, project_name, plan_answer=plan_answer
+            )
         plan_confirmation = _PLAN_CONFIRM.fullmatch(command)
         if plan_confirmation:
             return RoutedRequest(

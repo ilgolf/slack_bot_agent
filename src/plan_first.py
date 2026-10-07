@@ -138,6 +138,34 @@ def record_decision(text: str, question: Question, decision: str) -> str:
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class PlanAnswer:
+    """One of the fixed answers to a plan review; `text` is the decision for `decision`."""
+
+    kind: Literal["recommended", "all_recommended", "hold", "stop", "decision"]
+    text: str = ""
+
+
+_ANSWER_WORDS: dict[str, Literal["recommended", "all_recommended", "hold", "stop"]] = {
+    "추천대로": "recommended",
+    "추천대로 해줘": "recommended",
+    "나머지 추천대로": "all_recommended",
+    "보류": "hold",
+    "중단": "stop",
+}
+_DECISION = re.compile(r"^결정\s*[:：]\s*(.*)$", re.DOTALL)
+
+
+def parse_answer(message: str) -> PlanAnswer | None:
+    """The whole message must be one of the fixed answers; nothing else is interpreted."""
+    command = message.strip()
+    word = _ANSWER_WORDS.get(command)
+    if word is not None:
+        return PlanAnswer(word)
+    decision = _DECISION.match(command)
+    return PlanAnswer("decision", decision[1].strip()) if decision else None
+
+
 def detect_area(messages: Sequence[str]) -> str | None:
     """The area the most recent message that names one is about; `messages` run oldest
     first. `None` when no message names an area."""

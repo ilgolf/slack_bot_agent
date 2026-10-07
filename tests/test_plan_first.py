@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 
 from src.plan_first import (
+    PlanAnswer,
     detect_area,
     has_open_questions,
     open_questions,
+    parse_answer,
     plan_first_enabled,
     plan_status,
     record_decision,
@@ -192,3 +194,39 @@ def test_a_decision_is_one_trimmed_line_of_at_most_300_characters() -> None:
     for bad in ("", "   ", "가" * 301):
         with pytest.raises(ValueError):
             record_decision(_PLAN, question, bad)
+
+
+@pytest.mark.parametrize(
+    ("message", "kind", "text"),
+    [
+        ("추천대로", "recommended", ""),
+        ("추천대로 해줘", "recommended", ""),
+        ("나머지 추천대로", "all_recommended", ""),
+        ("보류", "hold", ""),
+        ("중단", "stop", ""),
+        ("결정: 쓰기는 1개로", "decision", "쓰기는 1개로"),
+        ("결정：쓰기는 1개로", "decision", "쓰기는 1개로"),
+        ("결정:\n여러 줄\n답", "decision", "여러 줄\n답"),
+        ("결정:", "decision", ""),
+    ],
+)
+def test_the_fixed_answers_to_a_plan_review_are_recognised(
+    message: str, kind: str, text: str
+) -> None:
+    assert parse_answer(message) == PlanAnswer(kind, text)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "추천대로 하자",
+        "나머지는 추천대로",
+        "보류할게",
+        "중단해줘 지금",
+        "Q2는 1개로 하자",
+        "결정했어",
+        "실행",
+    ],
+)
+def test_wording_around_the_fixed_answers_is_not_an_answer(message: str) -> None:
+    assert parse_answer(message) is None

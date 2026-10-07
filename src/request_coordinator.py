@@ -84,6 +84,10 @@ class RequestCoordinator:
             )
         if routed.intent is RequestIntent.PLAN_CONFIRM and routed.area is not None:
             return self.execution_workflow.confirm_plan(channel_id, thread_ts, routed.area)
+        if routed.intent is RequestIntent.PLAN_ANSWER and routed.plan_answer is not None:
+            return self.execution_workflow.answer_plan_review(
+                channel_id, thread_ts, routed.plan_answer
+            )
         if routed.intent is RequestIntent.THREAD_SUMMARY:
             if self.thread_summary_workflow is None:
                 return "스레드 요약 기능이 설정되지 않았습니다."

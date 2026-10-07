@@ -9,6 +9,7 @@ from src.agent_trace import AgentTraceRecorder, ThreadTraceStore
 from src.config import Settings
 from src.execution_workflow import ExecutionPlan, ExecutionRisk, ExecutionStep, ExecutionWorkflow
 from src.linear_workflow import LinearIntegrationWorkflow
+from src.plan_first import PlanAnswer
 from src.project_resolver import ProjectResolver
 from src.request_coordinator import RequestCoordinator
 from src.request_router import RequestIntent, RequestRouter
@@ -488,3 +489,29 @@ def test_the_plan_confirmation_command_reaches_the_workflow_in_every_mode(
     assert reply == "확정 응답"
     assert workflow.confirmed == ("C1", "1.1", "linear")
     assert context.user_messages("C1", "1.1") == ["<@U1> 기획 확정 linear"]
+
+
+def test_a_plan_review_answer_reaches_the_workflow(tmp_path: Path) -> None:
+    class Recorder(ExecutionWorkflow):
+        def answer_plan_review(self, channel_id: str, thread_ts: str, answer: PlanAnswer) -> str:
+            self.answered = (channel_id, thread_ts, answer)
+            return "기록 응답"
+
+    workflow = Recorder(project_resolver=ProjectResolver(root=tmp_path))
+    coordinator = RequestCoordinator(
+        router=RequestRouter(code_work_mode="analysis"),
+        execution_workflow=workflow,
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
+    context = ThreadContextStore(root=tmp_path / "context")
+
+    routed, reply = coordinator.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="결정: 1개로 시작",
+        thread_context=context,
+        agent=TraceAgent(),  # type: ignore[arg-type]
+    )
+
+    assert routed.intent is RequestIntent.PLAN_ANSWER and reply == "기록 응답"
+    assert workflow.answered == ("C1", "1.1", PlanAnswer("decision", "1개로 시작"))

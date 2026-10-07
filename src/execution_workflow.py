@@ -40,6 +40,7 @@ from src.harness import load_file
 from src.message_text import content_text
 from src.plan_first import (
     CONFIRMED,
+    PlanAnswer,
     detect_area,
     has_open_questions,
     parse_status,
@@ -80,6 +81,9 @@ _SLACK_MENTION = re.compile(r"<@[^>]+>")
 _CONFIRMATION = re.compile(r"^(실행|실행해줘|실행합니다)$")
 _CANCELLATION = re.compile(r"^(취소|취소해줘|취소합니다)$")
 _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
+_NO_PLAN_REVIEW = (
+    "진행 중인 기획 검토가 없습니다. `기획 확정 <영역>`을 보내 열린 질문 확인을 시작해 주세요."
+)
 _NO_ROLLBACK_WARNING = "롤백 불가: 이 프로젝트는 worktree로 격리할 수 없어 원본에 직접 적용됩니다."
 # Accept a Korean postposition directly after a filename (``plan.md에``)
 # while returning only the project-relative path.
@@ -1348,6 +1352,10 @@ class ExecutionWorkflow:
             f"✅ `{relative}`를 확정했습니다. 이제 같은 스레드에서 개발을 요청하면 "
             "기획의 슬라이스를 구현합니다."
         )
+
+    def answer_plan_review(self, channel_id: str, thread_ts: str, answer: PlanAnswer) -> str:
+        """An answer to the plan review `기획 확정 <영역>` started (plan.md Phase 31)."""
+        return _NO_PLAN_REVIEW
 
     def _discard(self, channel_id: str, thread_ts: str) -> str:
         none_message = "폐기할 작업 브랜치(worktree)가 없습니다."

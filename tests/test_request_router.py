@@ -109,3 +109,29 @@ def test_a_plan_confirmation_needs_an_area_and_nothing_more(text: str) -> None:
     assert RequestRouter(code_work_mode="analysis").route(text).intent is not (
         RequestIntent.PLAN_CONFIRM
     )
+
+
+@pytest.mark.parametrize("mode", ["analysis", "plan", "edit"])
+@pytest.mark.parametrize(
+    ("text", "kind"),
+    [
+        ("추천대로", "recommended"),
+        ("<@U1> 나머지 추천대로", "all_recommended"),
+        ("보류", "hold"),
+        ("중단", "stop"),
+        ("결정: 1개로 시작", "decision"),
+    ],
+)
+def test_the_answers_to_a_plan_review_are_fixed_commands_in_every_mode(
+    mode: str, text: str, kind: str
+) -> None:
+    routed = RequestRouter(code_work_mode=mode).route(text)  # type: ignore[arg-type]
+
+    assert routed.intent is RequestIntent.PLAN_ANSWER
+    assert routed.plan_answer is not None and routed.plan_answer.kind == kind
+
+
+def test_other_wording_is_not_a_plan_review_answer() -> None:
+    assert RequestRouter(code_work_mode="analysis").route("추천대로 하자").intent is not (
+        RequestIntent.PLAN_ANSWER
+    )
