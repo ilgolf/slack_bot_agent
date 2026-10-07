@@ -184,7 +184,7 @@ _EDIT_POLICY = (
 )
 
 
-def _stage_policy(stage: str | None, area: str | None) -> str:
+def _stage_policy(stage: str | None, area: str | None, plan_rules: str = "") -> str:
     """Plan-first projects (plan.md Phase 28): the code enforces the write limit; this only
     tells the agent which stage it is in so it works with the limit instead of against it."""
     if stage == "planning" and area is not None:
@@ -194,6 +194,7 @@ def _stage_policy(stage: str | None, area: str | None) -> str:
             "본문에 목표·범위·결정·슬라이스와 `## 열린 질문`(사용자가 정해야 할 것은 추측하지 "
             "말고 `- [ ]`로 남기기). `상태:`를 `확정`으로 바꾸지 마세요. 확정은 사용자의 "
             f"`기획 확정 {area}` 명령으로만 됩니다.\n"
+            + (f"[기획 문서 규칙]\n{plan_rules}\n" if plan_rules else "")
         )
     if stage == "planning":
         return (
@@ -215,6 +216,7 @@ def build_edit_prompt(
     *,
     stage: str | None = None,
     area: str | None = None,
+    plan_rules: str = "",
 ) -> str:
     """`request` may carry earlier thread messages ahead of "현재 요청:"; only the current
     request stays outside the data tags."""
@@ -224,7 +226,7 @@ def build_edit_prompt(
     )
     named = ", ".join(sorted(named_paths))
     named_line = f"사용자가 직접 지정한 파일: {named}\n" if named else ""
-    stage_line = _stage_policy(stage, area)
+    stage_line = _stage_policy(stage, area, plan_rules)
     return f"{_EDIT_POLICY}\n{stage_line}{thread_block}{named_line}사용자 요청: {current_request}\n"
 
 

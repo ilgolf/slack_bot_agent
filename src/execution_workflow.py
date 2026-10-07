@@ -36,6 +36,7 @@ from src.code_work_markers import (
     is_plan_follow_work_request,
 )
 from src.edit_review import review_worktree
+from src.harness import load_file
 from src.message_text import content_text
 from src.plan_first import (
     CONFIRMED,
@@ -1169,7 +1170,11 @@ class ExecutionWorkflow:
         try:
             agent_text = run_edit(
                 build_edit_prompt(
-                    contextual_text, named, stage=plan_limits.stage, area=plan_limits.area
+                    contextual_text,
+                    named,
+                    stage=plan_limits.stage,
+                    area=plan_limits.area,
+                    plan_rules=load_file("plan-docs.md") if plan_limits.stage == "planning" else "",
                 )
             )
         except AnalysisAgentError as exc:

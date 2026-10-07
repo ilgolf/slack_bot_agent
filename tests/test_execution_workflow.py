@@ -3940,3 +3940,23 @@ def test_a_bypass_still_cannot_let_the_agent_confirm_a_plan(tmp_path: Path) -> N
 
     assert response is not None and "기획 확정" in response
     assert workspaces.existing("my-project", "C1", "1.1") is None
+
+
+def test_the_planning_prompt_carries_the_shipped_plan_document_rules(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="초안")
+    workflow, _, context = _edit_workflow(tmp_path)
+    planning = EditAgent(_write("docs/linear/plan.md", "# 기획\n\n상태: 초안\n"))
+
+    _ask_in_mode(workflow, context, planning, "my-project linear 개발 진행해")
+
+    assert "[기획 문서 규칙]" in planning.prompts[0] and "추천:" in planning.prompts[0]
+
+
+def test_the_developing_prompt_does_not_carry_the_plan_document_rules(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="확정")
+    workflow, _, context = _edit_workflow(tmp_path)
+    developing = EditAgent(_write("src/feature.py", "x = 1\n"))
+
+    _ask_in_mode(workflow, context, developing, "my-project linear 개발 진행해")
+
+    assert "[기획 문서 규칙]" not in developing.prompts[0]

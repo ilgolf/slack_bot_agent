@@ -118,3 +118,20 @@ def test_without_a_stage_the_edit_prompt_has_no_plan_first_instructions() -> Non
     prompt = build_edit_prompt("수정해", set())
 
     assert "docs/" not in prompt and "열린 질문" not in prompt
+
+
+def test_the_planning_prompt_carries_the_plan_document_rules_and_no_other_stage_does() -> None:
+    rules = "열린 질문마다 추천을 붙인다"
+
+    planning = build_edit_prompt(
+        "linear 기획", set(), stage="planning", area="linear", plan_rules=rules
+    )
+    no_area = build_edit_prompt("기획", set(), stage="planning", area=None, plan_rules=rules)
+    developing = build_edit_prompt(
+        "개발", set(), stage="developing", area="linear", plan_rules=rules
+    )
+    plain = build_edit_prompt("수정", set(), plan_rules=rules)
+
+    assert "[기획 문서 규칙]" in planning and rules in planning
+    for prompt in (no_area, developing, plain):
+        assert rules not in prompt
