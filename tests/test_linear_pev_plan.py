@@ -8,7 +8,10 @@ from typing import Any
 import pytest
 
 from src.linear_pev_plan import (
+    MAX_DESCRIPTION_CHARS,
+    MAX_NAME_CHARS,
     MAX_STEPS,
+    MAX_TITLE_CHARS,
     LinearPlan,
     PlanRejected,
     StepRef,
@@ -178,3 +181,29 @@ def test_validation_does_not_mutate_input() -> None:
     snapshot = copy.deepcopy(raw)
     validate_plan(raw)
     assert raw == snapshot
+
+
+def _create(**args: Any) -> dict[str, Any]:
+    return {
+        "id": "s1",
+        "operation": "create_issue",
+        "kind": "write",
+        "args": {"team": "ENG", "title": "t", **args},
+    }
+
+
+@pytest.mark.parametrize(
+    ("key", "limit"),
+    [("title", MAX_TITLE_CHARS), ("description", MAX_DESCRIPTION_CHARS), ("team", MAX_NAME_CHARS)],
+)
+def test_text_arguments_over_their_limit_are_rejected_and_the_limit_itself_passes(
+    key: str, limit: int
+) -> None:
+    assert isinstance(validate_plan(_plan(_create(**{key: "가" * limit}))), LinearPlan)
+    assert _code(_plan(_create(**{key: "가" * (limit + 1)}))) == "too_long"
+
+
+def test_a_state_name_over_the_limit_is_rejected() -> None:
+    long_state = {"issue": "ENG-1", "state": "가" * (MAX_NAME_CHARS + 1)}
+
+    assert _code(_plan(_update(args=long_state))) == "too_long"

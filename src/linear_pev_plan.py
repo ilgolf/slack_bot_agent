@@ -15,10 +15,18 @@ from src.linear_tools import linear_capability
 
 MAX_STEPS = 5
 MAX_WRITE_STEPS = 1  # 문서 Q2의 v1 제안값. 결정 전 임시 상한이다.
+# 문자열 인자 길이 상한(임시값, plan.md Phase 29). 실제 Linear 한도는 확인하지 못했다.
+MAX_TITLE_CHARS = 256
+MAX_DESCRIPTION_CHARS = 10_000
+MAX_NAME_CHARS = 64
+_TEXT_LIMITS = {
+    "title": MAX_TITLE_CHARS,
+    "description": MAX_DESCRIPTION_CHARS,
+    "team": MAX_NAME_CHARS,
+    "state": MAX_NAME_CHARS,
+}
 
-_UUID = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _STEP_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,15}$")
 _ISSUE_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 
@@ -220,6 +228,8 @@ def _text_arg(step_id: str, key: str, value: object) -> str:
         raise _Reject("bad_args", f"{step_id}: {key}는 문자열이어야 합니다")
     if key in {"title", "team", "state"} and not value.strip():
         raise _Reject("bad_args", f"{step_id}: {key}가 비어 있습니다")
+    if len(value) > _TEXT_LIMITS.get(key, MAX_DESCRIPTION_CHARS):
+        raise _Reject("too_long", f"{step_id}: {key}가 너무 깁니다")
     # 팀은 키, 상태는 이름으로만 지정한다(Q5 기본값: UUID 직접 입력 거부).
     if key in {"team", "state"} and _UUID.match(value.strip()):
         raise _Reject("uuid_not_allowed", f"{step_id}: {key}에 UUID를 직접 쓸 수 없습니다")
