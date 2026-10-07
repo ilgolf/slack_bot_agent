@@ -76,9 +76,7 @@ def test_a_named_harness_file_is_read_and_unsafe_ones_are_not(tmp_path: Path) ->
     assert load_file("../outside.md", harness) == ""
 
 
-def test_the_shipped_plan_document_rules_cover_location_status_recommendations_and_consistency() -> (
-    None
-):
+def test_the_shipped_plan_document_rules_cover_the_authoring_rules() -> None:
     rules = load_file("plan-docs.md")
 
     for point in (
