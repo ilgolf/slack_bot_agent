@@ -94,3 +94,9 @@ def test_the_plan_document_rules_name_the_question_format_the_bot_parses() -> No
     rules = load_file("plan-docs.md")
 
     assert "- [ ] Q" in rules and "하나씩 묻" in rules and "들여쓴" in rules
+
+
+def test_the_plan_document_rules_ask_for_numbered_options_and_a_numbered_recommendation() -> None:
+    rules = load_file("plan-docs.md")
+
+    assert "1)" in rules and "2~4개" in rules and "추천: 2" in rules and "번호만" in rules
