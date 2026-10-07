@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.harness import DEFAULT_GUIDANCE, MAX_GUIDANCE_CHARS, load_guidance
+from src.harness import DEFAULT_GUIDANCE, MAX_GUIDANCE_CHARS, load_file, load_guidance
 from src.linear_tools import linear_capability
 
 
@@ -60,3 +60,33 @@ def test_the_shipped_guidance_tells_how_to_word_a_work_request() -> None:
         "docs/README.md",
     ):
         assert point in guidance
+
+
+def test_a_named_harness_file_is_read_and_unsafe_ones_are_not(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.md"
+    outside.write_text("밖의 비밀")
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    (harness / "rules.md").write_text("  규칙 본문\n")
+    (harness / "link.md").symlink_to(outside)
+
+    assert load_file("rules.md", harness) == "규칙 본문"
+    assert load_file("missing.md", harness) == ""
+    assert load_file("link.md", harness) == ""
+    assert load_file("../outside.md", harness) == ""
+
+
+def test_the_shipped_plan_document_rules_cover_location_status_recommendations_and_consistency() -> (
+    None
+):
+    rules = load_file("plan-docs.md")
+
+    for point in (
+        "docs/<영역>/",
+        "한 곳",
+        "상태:",
+        "추천:",
+        "구현된",
+        "- [x]",
+    ):
+        assert point in rules

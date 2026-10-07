@@ -18,6 +18,16 @@ DEFAULT_GUIDANCE = (
 )
 
 
+def load_file(name: str, directory: Path = HARNESS_DIR) -> str:
+    """One harness file by name, stripped; empty when it is missing, a symlink out of the
+    directory, or not a plain file inside it."""
+    root = directory.resolve()
+    resolved = (directory / name).resolve()
+    if not resolved.is_file() or not resolved.is_relative_to(root):
+        return ""
+    return resolved.read_text(encoding="utf-8").strip()[:MAX_GUIDANCE_CHARS]
+
+
 def load_guidance(directory: Path = HARNESS_DIR) -> str:
     """Concatenate the directory's `*.md` files by name; fall back to a one-line summary."""
     if not directory.is_dir():
