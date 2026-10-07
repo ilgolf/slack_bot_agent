@@ -10,8 +10,10 @@ import pytest
 from src.plan_first import (
     detect_area,
     has_open_questions,
+    open_questions,
     plan_first_enabled,
     plan_status,
+    record_decision,
     wants_bypass,
     with_status,
 )
@@ -120,3 +122,73 @@ def test_an_explicit_request_to_skip_the_plan_is_a_bypass(text: str) -> None:
 )
 def test_ordinary_or_negated_wording_is_not_a_bypass(text: str) -> None:
     assert not wants_bypass(text)
+
+
+_PLAN = """# 기획
+
+상태: 초안
+
+## 목표
+- [ ] 이건 할 일이라 질문이 아니다
+
+## 열린 질문
+
+- [ ] Q2. 쓰기를 몇 개 허용할까?
+  추천: 1개 (이유 한 줄)
+- [x] Q3. 이미 정함
+  결정: 켠다
+- [ ] Q4. 추천이 없는 질문
+- [ ] Q5. 두 줄 추천
+  설명 줄
+  추천: 폴백 없음
+
+## 슬라이스
+- [ ] 이것도 질문이 아니다
+"""
+
+
+def test_the_unchecked_questions_are_read_with_their_number_text_and_recommendation() -> None:
+    questions = open_questions(_PLAN)
+
+    assert [(q.number, q.text, q.recommendation) for q in questions] == [
+        ("Q2", "쓰기를 몇 개 허용할까?", "1개 (이유 한 줄)"),
+        ("Q4", "추천이 없는 질문", None),
+        ("Q5", "두 줄 추천", "폴백 없음"),
+    ]
+
+
+def test_a_document_without_questions_has_none() -> None:
+    assert open_questions("본문만") == []
+    assert open_questions("## 열린 질문\n\n- [x] Q1. 정함\n") == []
+
+
+def test_a_decision_checks_the_question_and_adds_a_line_below_its_block() -> None:
+    question = open_questions(_PLAN)[0]
+
+    updated = record_decision(_PLAN, question, "1개로 시작")
+
+    assert (
+        "- [x] Q2. 쓰기를 몇 개 허용할까?\n  추천: 1개 (이유 한 줄)\n  결정: 1개로 시작\n"
+        in updated
+    )
+    assert [q.number for q in open_questions(updated)] == ["Q4", "Q5"]
+    # everything else is untouched
+    assert updated.replace("- [x] Q2.", "- [ ] Q2.").replace("  결정: 1개로 시작\n", "") == _PLAN
+
+
+def test_a_decision_goes_below_a_questions_last_indented_line() -> None:
+    question = open_questions(_PLAN)[2]
+
+    updated = record_decision(_PLAN, question, "폴백 없이")
+
+    assert "  추천: 폴백 없음\n  결정: 폴백 없이\n\n## 슬라이스" in updated
+
+
+def test_a_decision_is_one_trimmed_line_of_at_most_300_characters() -> None:
+    question = open_questions(_PLAN)[0]
+
+    assert "  결정: 줄바꿈 정리\n" in record_decision(_PLAN, question, "  줄바꿈\n  정리  ")
+    assert "가" * 300 in record_decision(_PLAN, question, "가" * 300)
+    for bad in ("", "   ", "가" * 301):
+        with pytest.raises(ValueError):
+            record_decision(_PLAN, question, bad)

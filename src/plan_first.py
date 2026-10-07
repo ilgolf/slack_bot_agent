@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -19,7 +20,9 @@ DRAFT: Literal["초안"] = "초안"
 
 _STATUS_LINE = re.compile(r"^상태:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
 _OPEN_QUESTIONS_HEADING = "## 열린 질문"
-_UNCHECKED = re.compile(r"^\s*- \[ \]")
+_QUESTION = re.compile(r"^- \[ \]\s*(?:(Q\d+)\.\s*)?(.*)$")
+_RECOMMENDATION = re.compile(r"^\s+추천:\s*(.*)$")
+MAX_DECISION_CHARS = 300
 _AREA_MENTION = re.compile(
     r"docs/(?P<doc>linear|code|notion)\b"
     r"|\b(?P<name>linear|notion)\b"
@@ -81,15 +84,58 @@ def is_plan_path(relative: str) -> bool:
     return any(relative == f"docs/{area}/plan.md" for area in AREAS)
 
 
-def has_open_questions(text: str) -> bool:
-    """An unchecked `- [ ]` item under `## 열린 질문` (up to the next heading)."""
+@dataclass(frozen=True)
+class Question:
+    """An unchecked item under `## 열린 질문`: `- [ ] Q3. 질문` plus the indented lines below it
+    (one of which may be `추천: ...`). `line` is where it starts and `end` just past its block."""
+
+    number: str
+    text: str
+    recommendation: str | None
+    line: int
+    end: int
+
+
+def open_questions(text: str) -> list[Question]:
+    lines = text.split("\n")
+    questions: list[Question] = []
     inside = False
-    for line in text.splitlines():
+    for index, line in enumerate(lines):
         if line.startswith("#"):
             inside = line.startswith(_OPEN_QUESTIONS_HEADING)
-        elif inside and _UNCHECKED.match(line):
-            return True
-    return False
+            continue
+        match = _QUESTION.match(line) if inside else None
+        if match is None:
+            continue
+        end = index + 1
+        recommendation: str | None = None
+        while end < len(lines) and lines[end].startswith((" ", "\t")) and lines[end].strip():
+            advice = _RECOMMENDATION.match(lines[end])
+            if advice is not None and recommendation is None:
+                recommendation = advice[1].strip() or None
+            end += 1
+        number = match[1] or f"#{len(questions) + 1}"
+        questions.append(Question(number, match[2].strip(), recommendation, index, end))
+    return questions
+
+
+def has_open_questions(text: str) -> bool:
+    """An unchecked `- [ ]` item under `## 열린 질문` (up to the next heading)."""
+    return bool(open_questions(text))
+
+
+def record_decision(text: str, question: Question, decision: str) -> str:
+    """`text` with `question` checked off and a `결정:` line below its block. The decision is
+    one trimmed line of at most `MAX_DECISION_CHARS` characters."""
+    clean = " ".join(decision.split())
+    if not clean or len(clean) > MAX_DECISION_CHARS:
+        raise ValueError(f"결정은 1~{MAX_DECISION_CHARS}자의 한 줄이어야 합니다")
+    lines = text.split("\n")
+    if not lines[question.line].startswith("- [ ]"):
+        raise ValueError("이미 정해졌거나 바뀐 질문입니다")
+    lines[question.line] = lines[question.line].replace("- [ ]", "- [x]", 1)
+    lines.insert(question.end, f"  결정: {clean}")
+    return "\n".join(lines)
 
 
 def detect_area(messages: Sequence[str]) -> str | None:
