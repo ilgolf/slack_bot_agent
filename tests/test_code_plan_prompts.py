@@ -106,11 +106,12 @@ def test_the_planning_stage_prompt_asks_for_the_area_when_none_is_known() -> Non
     assert "코드를 쓰지 말고" in prompt
 
 
-def test_the_developing_stage_prompt_follows_the_confirmed_plan_one_slice_at_a_time() -> None:
+def test_the_developing_stage_prompt_works_through_the_plan_in_order_not_one_slice_per_run() -> None:
     prompt = build_edit_prompt("linear 개발 진행해", set(), stage="developing", area="linear")
 
     assert "docs/linear/plan.md" in prompt
-    assert "한 번에 하나" in prompt and "열린 질문으로 되돌려" in prompt
+    assert "순서대로" in prompt and "열린 질문으로 되돌려" in prompt
+    assert "한 번에 하나" not in prompt and "하나씩만" not in prompt
     assert "코드를 쓰지 말고" not in prompt
 
 
