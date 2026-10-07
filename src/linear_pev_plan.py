@@ -27,6 +27,9 @@ _TEXT_LIMITS = {
 }
 
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_REF_PATH = re.compile(r"^[A-Za-z0-9_.\[\]]{0,64}$")
+# 이슈 인자가 가리킬 수 있는, 이슈를 돌려주는 읽기 단계
+_ISSUE_SOURCES = frozenset({"list_issues", "get_issue"})
 _STEP_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,15}$")
 _ISSUE_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 
@@ -251,9 +254,13 @@ def _issue_arg(
             raise _Reject("bad_args", f"{step_id}: 참조 형식이 올바르지 않습니다")
         if ref not in depends_on:
             raise _Reject("dependency", f"{step_id}: 참조한 {ref}가 depends_on에 없습니다")
+        if not _REF_PATH.match(path):
+            raise _Reject("bad_ref", f"{step_id}: 참조 경로가 올바르지 않습니다")
         # 쓰기 대상은 읽기 단계의 결과에서만 가져올 수 있다(대상 추측 방지).
         if kind == "write" and earlier[ref].kind != "read":
             raise _Reject("unresolved_target", f"{step_id}: 쓰기 대상은 읽기 결과만 참조합니다")
+        if earlier[ref].operation not in _ISSUE_SOURCES:
+            raise _Reject("bad_ref", f"{step_id}: {ref}는 이슈를 돌려주는 단계가 아닙니다")
         return StepRef(step_id=ref, path=path)
     if not isinstance(value, str) or _UUID.match(value.strip()):
         raise _Reject("uuid_not_allowed", f"{step_id}: 이슈는 식별자(ENG-123)로만 지정합니다")

@@ -381,5 +381,5 @@ Slack 에이전트가 쓴 `src/linear_pev_plan.py`(슬라이스 1)를 평가했�
 ## 테스트 목록 (위에서부터 하나씩)
 
 - [x] 제목·설명·팀·상태가 상한을 넘으면 `too_long`이고, 상한 길이는 통과한다
-- [ ] 이슈 인자가 이슈를 돌려주지 않는 단계(`list_teams` 등)를 참조하면 `bad_ref`이고, `list_issues`·`get_issue` 참조는 통과한다
-- [ ] 참조 `path`에 허용되지 않은 문자가 있거나 너무 길면 `bad_ref`다
+- [x] 이슈 인자가 이슈를 돌려주지 않는 단계(`list_teams` 등)를 참조하면 `bad_ref`이고, `list_issues`·`get_issue` 참조는 통과한다
+- [x] 참조 `path`에 허용되지 않은 문자가 있거나 너무 길면 `bad_ref`다

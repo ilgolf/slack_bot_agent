@@ -207,3 +207,39 @@ def test_a_state_name_over_the_limit_is_rejected() -> None:
     long_state = {"issue": "ENG-1", "state": "가" * (MAX_NAME_CHARS + 1)}
 
     assert _code(_plan(_update(args=long_state))) == "too_long"
+
+
+def _plan_with_ref(source: dict[str, Any], **ref: Any) -> dict[str, Any]:
+    update = _update("s2", args={"issue": {"ref": "s1", **ref}, "state": "Done"}, depends_on=["s1"])
+    return _plan(source, update)
+
+
+@pytest.mark.parametrize("operation", ["list_issues", "get_issue"])
+def test_an_issue_argument_may_reference_a_step_that_returns_issues(operation: str) -> None:
+    source: dict[str, Any] = {"id": "s1", "operation": operation, "kind": "read", "args": {}}
+    if operation == "get_issue":
+        source["args"] = {"issue": "ENG-1"}
+
+    result = validate_plan(_plan_with_ref(source, path="items[0]"))
+
+    assert isinstance(result, LinearPlan)
+
+
+def test_an_issue_argument_cannot_reference_a_step_that_returns_something_else() -> None:
+    teams: dict[str, Any] = {"id": "s1", "operation": "list_teams", "kind": "read", "args": {}}
+
+    assert _code(_plan_with_ref(teams)) == "bad_ref"
+
+
+@pytest.mark.parametrize("path", ["items[0].id", "items.0", "", "a_b.c[12]"])
+def test_a_reference_path_of_plain_characters_passes(path: str) -> None:
+    source = _read("s1")
+
+    assert isinstance(validate_plan(_plan_with_ref(source, path=path)), LinearPlan)
+
+
+@pytest.mark.parametrize("path", ["items[0]; drop", "../x", "items/0", "a b", "가", "x" * 65])
+def test_a_reference_path_with_other_characters_or_too_long_is_rejected(path: str) -> None:
+    source = _read("s1")
+
+    assert _code(_plan_with_ref(source, path=path)) == "bad_ref"
