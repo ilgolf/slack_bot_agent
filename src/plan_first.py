@@ -22,6 +22,8 @@ _STATUS_LINE = re.compile(r"^상태:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
 _OPEN_QUESTIONS_HEADING = "## 열린 질문"
 _QUESTION = re.compile(r"^- \[ \]\s*(?:(Q\d+)\.\s*)?(.*)$")
 _RECOMMENDATION = re.compile(r"^\s+추천:\s*(.*)$")
+_OPTION = re.compile(r"^\s+(\d+)[).]\s+(.+)$")
+_LEADING_NUMBER = re.compile(r"^(\d+)(?!\d)")
 MAX_DECISION_CHARS = 300
 _AREA_MENTION = re.compile(
     r"docs/(?P<doc>linear|code|notion)\b"
@@ -87,13 +89,15 @@ def is_plan_path(relative: str) -> bool:
 @dataclass(frozen=True)
 class Question:
     """An unchecked item under `## 열린 질문`: `- [ ] Q3. 질문` plus the indented lines below it
-    (one of which may be `추천: ...`). `line` is where it starts and `end` just past its block."""
+    (`추천: ...` and numbered options like `1) 첫째`). `line` is where it starts and `end` just
+    past its block."""
 
     number: str
     text: str
     recommendation: str | None
     line: int
     end: int
+    options: tuple[str, ...] = ()
 
 
 def open_questions(text: str) -> list[Question]:
@@ -109,14 +113,62 @@ def open_questions(text: str) -> list[Question]:
             continue
         end = index + 1
         recommendation: str | None = None
+        numbered: list[tuple[int, str]] = []
         while end < len(lines) and lines[end].startswith((" ", "\t")) and lines[end].strip():
             advice = _RECOMMENDATION.match(lines[end])
             if advice is not None and recommendation is None:
                 recommendation = advice[1].strip() or None
+            option = _OPTION.match(lines[end])
+            if option is not None:
+                numbered.append((int(option[1]), option[2].strip()))
             end += 1
         number = match[1] or f"#{len(questions) + 1}"
-        questions.append(Question(number, match[2].strip(), recommendation, index, end))
+        questions.append(
+            Question(
+                number,
+                match[2].strip(),
+                recommendation,
+                index,
+                end,
+                _options(numbered),
+            )
+        )
     return questions
+
+
+def _options(numbered: list[tuple[int, str]]) -> tuple[str, ...]:
+    """Options count only when they run 1, 2, 3, ... without a gap and offer a real choice."""
+    if len(numbered) < 2 or [n for n, _ in numbered] != list(range(1, len(numbered) + 1)):
+        return ()
+    return tuple(text for _, text in numbered)
+
+
+def recommended_choice(question: Question) -> int | None:
+    """The option number a recommendation starts with (`추천: 2 (이유)`), if it names one."""
+    if question.recommendation is None or not question.options:
+        return None
+    match = _LEADING_NUMBER.match(question.recommendation)
+    if match is None:
+        return None
+    number = int(match[1])
+    return number if 1 <= number <= len(question.options) else None
+
+
+def recommended_decision(question: Question) -> str | None:
+    """What `추천대로` records: the recommended option's wording, else the recommendation text."""
+    choice = recommended_choice(question)
+    if choice is not None:
+        return question.options[choice - 1]
+    return question.recommendation
+
+
+_CHOICE = re.compile(r"^\s*([1-9]\d?)\s*$")
+
+
+def parse_choice(message: str) -> int | None:
+    """A message that is only an option number."""
+    match = _CHOICE.match(message)
+    return int(match[1]) if match else None
 
 
 def has_open_questions(text: str) -> bool:

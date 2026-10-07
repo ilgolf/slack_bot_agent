@@ -13,8 +13,11 @@ from src.plan_first import (
     has_open_questions,
     open_questions,
     parse_answer,
+    parse_choice,
     plan_first_enabled,
     plan_status,
+    recommended_choice,
+    recommended_decision,
     record_decision,
     wants_bypass,
     with_status,
@@ -230,3 +233,57 @@ def test_the_fixed_answers_to_a_plan_review_are_recognised(
 )
 def test_wording_around_the_fixed_answers_is_not_an_answer(message: str) -> None:
     assert parse_answer(message) is None
+
+
+_CHOICE_PLAN = """## 열린 질문
+
+- [ ] Q2. 쓰기를 몇 개 허용할까?
+  1) 1개로 제한
+  2) 여러 개, 한 번에 승인
+  추천: 2 (이유)
+- [ ] Q3. 번호가 끊긴 선택지
+  1) 첫째
+  3) 셋째
+- [ ] Q4. 선택지 없음
+  추천: 꺼짐
+- [ ] Q5. 점 표기
+  1. 가
+  2. 나
+  추천: 1
+"""
+
+
+def test_numbered_lines_under_a_question_are_its_options() -> None:
+    q2, q3, q4, q5 = open_questions(_CHOICE_PLAN)
+
+    assert q2.options == ("1개로 제한", "여러 개, 한 번에 승인")
+    assert q3.options == () and q4.options == ()
+    assert q5.options == ("가", "나")
+    assert q2.recommendation == "2 (이유)"
+
+
+def test_a_recommendation_that_starts_with_an_option_number_means_that_option() -> None:
+    q2, q3, q4, q5 = open_questions(_CHOICE_PLAN)
+
+    assert recommended_choice(q2) == 2 and recommended_choice(q5) == 1
+    assert recommended_choice(q4) is None
+    assert recommended_decision(q2) == "여러 개, 한 번에 승인"
+    assert recommended_decision(q4) == "꺼짐"
+    assert recommended_decision(q3) is None
+
+
+def test_a_recommendation_number_outside_the_options_is_plain_text() -> None:
+    plan = "## 열린 질문\n\n- [ ] Q1. 질문\n  1) 가\n  2) 나\n  추천: 7 정도\n"
+
+    (question,) = open_questions(plan)
+
+    assert recommended_choice(question) is None
+    assert recommended_decision(question) == "7 정도"
+
+
+@pytest.mark.parametrize(
+    ("message", "number"),
+    [("1", 1), (" 2 ", 2), ("10", 10), ("0", None), ("1번", None), ("1 2", None)],
+)
+def test_a_message_that_is_only_a_number_is_a_choice(message: str, number: int | None) -> None:
+    assert parse_choice(message) == number
