@@ -88,3 +88,9 @@ def test_the_shipped_plan_document_rules_cover_the_authoring_rules() -> None:
         "- [x]",
     ):
         assert point in rules
+
+
+def test_the_plan_document_rules_name_the_question_format_the_bot_parses() -> None:
+    rules = load_file("plan-docs.md")
+
+    assert "- [ ] Q" in rules and "하나씩 묻" in rules and "들여쓴" in rules

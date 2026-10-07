@@ -454,7 +454,7 @@ plan-first로 에이전트가 쓴 `docs/linear/plan.md`(2026-10-07)에서 규칙
 - [x] 검토 상태가 사라져도 `기획 확정 <영역>`으로 다음 질문부터 이어진다
 
 ### C. 문서
-- [ ] `harness/plan-docs.md`에 "열린 질문은 `- [ ] Qn.` + 들여쓴 `추천:` 형식으로 쓴다(봇이 하나씩 묻는다)"를 적고, `docs/README.md`·`harness/requests.md`·README의 확정 흐름을 대화 방식으로 고친다
+- [x] `harness/plan-docs.md`에 "열린 질문은 `- [ ] Qn.` + 들여쓴 `추천:` 형식으로 쓴다(봇이 하나씩 묻는다)"를 적고, `docs/README.md`·`harness/requests.md`·README의 확정 흐름을 대화 방식으로 고친다
 
 ## 수동 확인 (테스트 아님, 완료 시 결과를 기록)
 
