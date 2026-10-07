@@ -1,4 +1,4 @@
-"""PEV 슬라이스 1: 계획 타입과 코드 검증기 (docs/linear-agent-pev.md 4절).
+"""PEV 슬라이스 1: 계획 타입과 코드 검증기 (docs/linear/pev.md 4절).
 
 LLM이 만든 계획(JSON 호환 dict)을 신뢰하지 않고 코드가 검증한다. 이 모듈은 Linear를
 호출하지 않고, 쓰기를 실행하지 않으며, 팀 키·상태 이름을 ID로 해석하지도 않는다.

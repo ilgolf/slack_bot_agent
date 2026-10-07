@@ -1,4 +1,4 @@
-"""PEV 계획 검증기: LLM 출력을 코드가 거부하는 조건 (docs/linear-agent-pev.md 4절)."""
+"""PEV 계획 검증기: LLM 출력을 코드가 거부하는 조건 (docs/linear/pev.md 4절)."""
 
 from __future__ import annotations
 
