@@ -51,6 +51,8 @@ from src.plan_first import (
     plan_first_enabled,
     plan_path,
     plan_status,
+    recommended_choice,
+    recommended_decision,
     record_decision,
     wants_bypass,
     with_status,
@@ -1381,6 +1383,10 @@ class ExecutionWorkflow:
             "기획의 슬라이스를 구현합니다."
         )
 
+    def has_plan_review(self, channel_id: str, thread_ts: str) -> bool:
+        review = self._plan_reviews.get((channel_id, thread_ts))
+        return review is not None and time.monotonic() - review.started <= _PLAN_REVIEW_TTL_SECONDS
+
     def answer_plan_review(self, channel_id: str, thread_ts: str, answer: PlanAnswer) -> str:
         """An answer to the plan review `기획 확정 <영역>` started (plan.md Phase 31). The
         dialogue is plain code: it asks, the person decides, the decision is recorded."""
@@ -1418,12 +1424,25 @@ class ExecutionWorkflow:
             return self._next_question(channel_id, thread_ts, worktree, review.area, text, prefix)
         if answer.kind == "all_recommended":
             return self._record_all_recommended(channel_id, thread_ts, worktree, review, pending)
-        if answer.kind == "recommended" and current.recommendation is None:
+        if answer.kind == "recommended" and recommended_decision(current) is None:
             return (
                 f"{current.number}에는 추천이 없어 `추천대로`를 쓸 수 없습니다. "
                 "`결정: <내용>`으로 답하거나 `보류`해 주세요."
             )
-        decision = current.recommendation if answer.kind == "recommended" else answer.text
+        if answer.kind == "choice":
+            if not current.options:
+                return (
+                    f"{current.number}에는 선택지가 없습니다. `결정: <내용>`으로 답하거나 "
+                    "`보류`해 주세요."
+                )
+            number = int(answer.text)
+            if not 1 <= number <= len(current.options):
+                return f"{current.number}의 선택지는 1~{len(current.options)}번입니다."
+            decision: str | None = current.options[number - 1]
+        elif answer.kind == "recommended":
+            decision = recommended_decision(current)
+        else:
+            decision = answer.text
         recorded = self._record_decision(worktree, review.area, text, current, decision or "")
         if recorded.error is not None:
             return recorded.error
@@ -1440,7 +1459,7 @@ class ExecutionWorkflow:
         review: _PlanReview,
         pending: list[Question],
     ) -> str:
-        missing = [q.number for q in pending if q.recommendation is None]
+        missing = [q.number for q in pending if recommended_decision(q) is None]
         if missing:
             return (
                 f"{', '.join(missing)}에는 추천이 없어 `나머지 추천대로`를 쓸 수 없습니다. "
@@ -1453,7 +1472,7 @@ class ExecutionWorkflow:
                 q for q in open_questions(text) if _question_key(q) not in review.held
             )
             recorded = self._record_decision(
-                worktree, review.area, text, current, current.recommendation or ""
+                worktree, review.area, text, current, recommended_decision(current) or ""
             )
             if recorded.error is not None:
                 return recorded.error
@@ -1500,10 +1519,19 @@ class ExecutionWorkflow:
                 if question.recommendation
                 else "추천: 없음 — `결정: <내용>`으로 답해 주세요."
             )
+            recommended = recommended_choice(question)
+            options = "".join(
+                f"{number}) {option}{' (추천)' if number == recommended else ''}\n"
+                for number, option in enumerate(question.options, start=1)
+            )
+            how = (
+                "번호만 보내면 됩니다. 그 밖의 답: "
+                if question.options
+                else "답하는 법: `추천대로` · "
+            ) + "`결정: <내용>` · `보류` · `나머지 추천대로` · `중단`"
             return (
                 f"{prefix}📝 `docs/{area}/plan.md` 열린 질문 {len(open_now)}개 중 하나입니다.\n"
-                f"*{question.number}.* {question.text}\n{advice}\n\n"
-                "답하는 법: `추천대로` · `결정: <내용>` · `보류` · `나머지 추천대로` · `중단`"
+                f"*{question.number}.* {question.text}\n{options}{advice}\n\n{how}"
             )
         self._plan_reviews.pop(key, None)
         if open_now:

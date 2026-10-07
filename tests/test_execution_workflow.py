@@ -4176,3 +4176,100 @@ def test_a_review_expires_after_half_an_hour(
     clock[0] += 31 * 60
 
     assert "진행 중인 기획 검토가 없습니다" in _answer(workflow, "recommended")
+
+
+_CHOICE_REVIEW_PLAN = """# 기획
+
+상태: 초안
+
+## 열린 질문
+
+- [ ] Q2. 쓰기를 몇 개 허용할까?
+  1) 1개로 제한
+  2) 여러 개, 한 번에 승인
+  추천: 2 (이유)
+- [ ] Q3. 플래그 기본값은?
+  1) 꺼짐
+  2) 켜짐
+  추천: 1
+- [ ] Q4. 선택지 없는 질문
+  추천: 유지
+"""
+
+
+def _plan_text(worktree: Path) -> str:
+    return (worktree / "docs" / "linear" / "plan.md").read_text()
+
+
+def test_a_question_with_options_shows_them_numbered_and_marks_the_recommended_one(
+    tmp_path: Path,
+) -> None:
+    workflow, _, _ = _review_thread(tmp_path, _CHOICE_REVIEW_PLAN)
+
+    reply = workflow.confirm_plan("C1", "1.1", "linear")
+
+    assert "1) 1개로 제한" in reply and "2) 여러 개, 한 번에 승인" in reply
+    assert "2) 여러 개, 한 번에 승인 (추천)" in reply and "1) 1개로 제한 (추천)" not in reply
+    assert "번호" in reply and "결정:" in reply
+
+
+def test_sending_an_option_number_records_that_options_wording(tmp_path: Path) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path, _CHOICE_REVIEW_PLAN)
+    workflow.confirm_plan("C1", "1.1", "linear")
+
+    reply = _answer(workflow, "choice", "1")
+
+    assert "  결정: 1개로 제한\n" in _plan_text(worktree)
+    assert "Q3" in reply and "1) 꺼짐 (추천)" in reply
+    assert _subjects(worktree)[0] == "bot: 기획 결정: linear Q2"
+
+
+def test_an_option_number_that_does_not_exist_is_refused_with_the_valid_range(
+    tmp_path: Path,
+) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path, _CHOICE_REVIEW_PLAN)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    before = _plan_text(worktree)
+
+    reply = _answer(workflow, "choice", "3")
+
+    assert "1~2" in reply and _plan_text(worktree) == before
+
+
+def test_a_number_for_a_question_without_options_is_refused(tmp_path: Path) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path, _CHOICE_REVIEW_PLAN)
+    workflow.confirm_plan("C1", "1.1", "linear")
+    _answer(workflow, "choice", "1")
+    _answer(workflow, "choice", "1")  # Q4 has no options
+
+    reply = _answer(workflow, "choice", "1")
+
+    assert "선택지가 없" in reply and "결정:" in reply
+    assert "- [ ] Q4." in _plan_text(worktree)
+
+
+def test_recommended_records_the_recommended_options_wording_not_its_number(
+    tmp_path: Path,
+) -> None:
+    workflow, worktree, _ = _review_thread(tmp_path, _CHOICE_REVIEW_PLAN)
+    workflow.confirm_plan("C1", "1.1", "linear")
+
+    _answer(workflow, "recommended")
+    _answer(workflow, "all_recommended")
+
+    text = _plan_text(worktree)
+    assert "  결정: 여러 개, 한 번에 승인\n" in text
+    assert "  결정: 꺼짐\n" in text and "  결정: 유지\n" in text
+    assert "결정: 2" not in text
+
+
+def test_a_review_is_known_to_be_open_only_while_it_is(tmp_path: Path) -> None:
+    workflow, _, _ = _review_thread(tmp_path, _CHOICE_REVIEW_PLAN)
+    assert not workflow.has_plan_review("C1", "1.1")
+
+    workflow.confirm_plan("C1", "1.1", "linear")
+    assert workflow.has_plan_review("C1", "1.1")
+    assert not workflow.has_plan_review("C1", "9.9")
+
+    _answer(workflow, "all_recommended")
+    assert not workflow.has_plan_review("C1", "1.1")

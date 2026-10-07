@@ -192,9 +192,10 @@ def record_decision(text: str, question: Question, decision: str) -> str:
 
 @dataclass(frozen=True)
 class PlanAnswer:
-    """One of the fixed answers to a plan review; `text` is the decision for `decision`."""
+    """One of the fixed answers to a plan review; `text` is the decision for `decision` and the
+    option number for `choice`."""
 
-    kind: Literal["recommended", "all_recommended", "hold", "stop", "decision"]
+    kind: Literal["recommended", "all_recommended", "hold", "stop", "decision", "choice"]
     text: str = ""
 
 

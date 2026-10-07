@@ -57,6 +57,10 @@ _LINEAR_READ = (
 )
 
 
+def strip_mentions(text: str) -> str:
+    return _MENTION.sub("", text).strip()
+
+
 class RequestRouter:
     """Current-message-only grammar.
 

@@ -9,7 +9,8 @@ from src.agent import AnalysisAgent
 from src.dispatch import dispatch_command
 from src.execution_workflow import ExecutionWorkflow
 from src.linear_workflow import LinearIntegrationWorkflow
-from src.request_router import RequestIntent, RequestRouter, RoutedRequest
+from src.plan_first import PlanAnswer, parse_choice
+from src.request_router import RequestIntent, RequestRouter, RoutedRequest, strip_mentions
 from src.thread_context import ThreadContextStore
 from src.thread_summary_workflow import ThreadSummaryWorkflow
 
@@ -31,7 +32,7 @@ class RequestCoordinator:
         agent: AnalysisAgent,
         on_progress: Callable[[str], None] | None = None,
     ) -> tuple[RoutedRequest, str]:
-        routed = self.router.route(text)
+        routed = self._plan_choice(text, channel_id, thread_ts) or self.router.route(text)
         if routed.text.casefold() in {"trace 요약", "trace summary"}:
             trace_store = getattr(agent, "thread_trace_store", None)
             trace = trace_store.get(channel_id, thread_ts) if trace_store is not None else None
@@ -53,6 +54,17 @@ class RequestCoordinator:
         thread_context.append(channel_id, thread_ts, text)
         thread_context.append(channel_id, thread_ts, response)
         return routed, response
+
+    def _plan_choice(self, text: str, channel_id: str, thread_ts: str) -> RoutedRequest | None:
+        """A message that is only an option number answers an open plan review; with no review
+        open it is an ordinary message, so numbers elsewhere are never swallowed."""
+        command = strip_mentions(text)
+        number = parse_choice(command)
+        if number is None or not self.execution_workflow.has_plan_review(channel_id, thread_ts):
+            return None
+        return RoutedRequest(
+            RequestIntent.PLAN_ANSWER, command, plan_answer=PlanAnswer("choice", str(number))
+        )
 
     def _route(
         self,

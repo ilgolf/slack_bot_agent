@@ -515,3 +515,55 @@ def test_a_plan_review_answer_reaches_the_workflow(tmp_path: Path) -> None:
 
     assert routed.intent is RequestIntent.PLAN_ANSWER and reply == "기록 응답"
     assert workflow.answered == ("C1", "1.1", PlanAnswer("decision", "1개로 시작"))
+
+
+class _ReviewRecorder(ExecutionWorkflow):
+    reviewing = False
+
+    def has_plan_review(self, channel_id: str, thread_ts: str) -> bool:
+        return self.reviewing
+
+    def answer_plan_review(self, channel_id: str, thread_ts: str, answer: PlanAnswer) -> str:
+        self.answered = answer
+        return "번호 기록"
+
+
+def _number_coordinator(tmp_path: Path, workflow: ExecutionWorkflow) -> RequestCoordinator:
+    return RequestCoordinator(
+        router=RequestRouter(code_work_mode="analysis"),
+        execution_workflow=workflow,
+        linear_workflow=LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
+    )
+
+
+def test_a_bare_number_answers_the_open_plan_review(tmp_path: Path) -> None:
+    workflow = _ReviewRecorder(project_resolver=ProjectResolver(root=tmp_path))
+    workflow.reviewing = True
+    context = ThreadContextStore(root=tmp_path / "context")
+
+    routed, reply = _number_coordinator(tmp_path, workflow).process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="<@U1> 2",
+        thread_context=context,
+        agent=TraceAgent(),  # type: ignore[arg-type]
+    )
+
+    assert routed.intent is RequestIntent.PLAN_ANSWER and reply == "번호 기록"
+    assert workflow.answered == PlanAnswer("choice", "2")
+
+
+def test_a_bare_number_without_an_open_review_is_handled_as_usual(tmp_path: Path) -> None:
+    workflow = _ReviewRecorder(project_resolver=ProjectResolver(root=tmp_path))
+    context = ThreadContextStore(root=tmp_path / "context")
+
+    routed, reply = _number_coordinator(tmp_path, workflow).process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="2",
+        thread_context=context,
+        agent=TraceAgent(),  # type: ignore[arg-type]
+    )
+
+    assert routed.intent is RequestIntent.PROJECT_ANALYSIS
+    assert not hasattr(workflow, "answered") and reply != "번호 기록"
