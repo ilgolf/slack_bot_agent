@@ -3254,6 +3254,49 @@ def test_a_clean_edit_is_verified_in_the_worktree_committed_and_reported(
     )
 
 
+def test_an_applied_edit_reports_what_the_agent_said_before_the_diffs(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    class Reporter(EditAgent):
+        def edit_code(self, prompt: str, worktree: Path, **kwargs: Any) -> str:
+            super().edit_code(prompt, worktree, **kwargs)
+            return "슬라이스 2까지 했습니다. 슬라이스 3은 기획에 없는 operation이 필요해 멈췄습니다."
+
+    response = _ask_in_mode(
+        workflow, context, Reporter(_write("README.md", "after\n")), "my-project README.md 수정해줘"
+    )
+
+    assert response is not None
+    assert "에이전트 보고:\n슬라이스 2까지 했습니다." in response
+    assert response.index("에이전트 보고:") < response.index("변경 내용:")
+
+
+def test_a_long_agent_report_is_cut_and_a_blank_one_is_left_out(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+
+    class Talker(EditAgent):
+        reply = ""
+
+        def edit_code(self, prompt: str, worktree: Path, **kwargs: Any) -> str:
+            super().edit_code(prompt, worktree, **kwargs)
+            return self.reply
+
+    long_agent = Talker(_write("README.md", "after\n"))
+    long_agent.reply = "가" * 5000
+    long_response = _ask_in_mode(workflow, context, long_agent, "my-project README.md 수정해줘")
+    blank_agent = Talker(_write("README.md", "again\n"))
+    blank_agent.reply = "  "
+    blank_response = _ask_in_mode(
+        workflow, context, blank_agent, "my-project README.md 다시 수정해줘"
+    )
+
+    assert long_response is not None and blank_response is not None
+    assert "가" * 1500 in long_response and "가" * 1501 not in long_response
+    assert "에이전트 보고:" not in blank_response
+
+
 def _ask_in_mode(
     workflow: ExecutionWorkflow, context: ThreadContextStore, agent: object, text: str
 ) -> str | None:

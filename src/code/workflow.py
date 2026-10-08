@@ -128,6 +128,7 @@ _NO_ROLLBACK_WARNING = "롤백 불가: 이 프로젝트는 worktree로 격리할
 # Accept a Korean postposition directly after a filename (``plan.md에``)
 # while returning only the project-relative path.
 _MAX_ANSWER_CHARS = 3500  # stays under Slack's message length limit
+_MAX_AGENT_REPORT_CHARS = 1500  # the agent's own summary beside the diffs
 
 
 _PATH_IN_REQUEST = re.compile(
@@ -840,12 +841,12 @@ class ExecutionWorkflow:
             except AnalysisAgentError as exc:
                 return self._edit_interrupted(channel_id, thread_ts, exc)
             review = review_worktree(
-            workspaces.git,
-            worktree,
-            named_paths=named,
-            write_roots=write_roots,
-            plan_first=plan_first,
-        )
+                workspaces.git,
+                worktree,
+                named_paths=named,
+                write_roots=write_roots,
+                plan_first=plan_first,
+            )
             if not review.ok:
                 return self._edit_rejected(project_name, channel_id, thread_ts, review.violations)
             plan = replace(plan, affected_files=list(review.changed_files))
@@ -900,7 +901,9 @@ class ExecutionWorkflow:
             f"`{path}`:\n```\n{_render_diff_excerpt(diff)}\n```"
             for path, diff in zip(review.changed_files, review.diffs, strict=False)
         )
-        return f"{render_execution_result(plan, result)}\n\n변경 내용:\n{previews}"
+        report = agent_text.strip()[:_MAX_AGENT_REPORT_CHARS]
+        report_block = f"에이전트 보고:\n{report}\n\n" if report else ""
+        return f"{render_execution_result(plan, result)}\n\n{report_block}변경 내용:\n{previews}"
 
     def _edit_interrupted(self, channel_id: str, thread_ts: str, exc: Exception) -> str:
         self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
