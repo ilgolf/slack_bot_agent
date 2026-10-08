@@ -9,8 +9,9 @@ import httpx
 
 from src.core.config import Settings
 from src.linear.client import LinearClient
+from src.linear.executor import PendingLinearActionStore
 from src.linear.tooluse import LinearTools
-from src.linear.workflow import LinearIntegrationWorkflow, PendingLinearActionStore
+from src.linear.workflow import LinearIntegrationWorkflow
 from src.slack.thread_context import ThreadContextStore
 
 

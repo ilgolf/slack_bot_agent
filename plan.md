@@ -492,7 +492,7 @@ plan-first로 에이전트가 쓴 `docs/linear/plan.md`(2026-10-07)에서 규칙
 
 ### B. PEV 분해 (구조 전용, 동작 불변)
 - [x] `execution_workflow.py`의 계획 타입·검증·렌더링을 `code/plan.py`, 도구 경계(`ProjectExecutionTools` 등)를 `code/tooluse.py`, 검증 결과 타입을 `code/verifier.py`로 옮긴다. `ExecutionWorkflow` 본체는 `code/workflow.py`에 남는다
-- [ ] `linear/`의 쓰기 게이트(`LinearActionDraft`, `PendingLinearActionStore`, `_run_action`)를 `linear/executor.py`로 분리한다. `linear/verifier.py`와 `notion/`은 자리만 둔다(내용 없음, 모듈 docstring으로 역할 기록)
+- [x] `linear/`의 쓰기 게이트(`LinearActionDraft`, `PendingLinearActionStore`, `_run_action`)를 `linear/executor.py`로 분리한다. `linear/verifier.py`와 `notion/`은 자리만 둔다(내용 없음, 모듈 docstring으로 역할 기록)
 
 ### C. 문서
 - [x] README·`harness/`·`docs/`의 경로(`src/…`)와 `python -m src.socket_mode`를 새 경로로 고친다

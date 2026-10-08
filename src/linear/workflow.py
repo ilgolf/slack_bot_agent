@@ -4,22 +4,33 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from enum import StrEnum
-from threading import Lock
 
 from src.core.config import Settings
 from src.linear.client import LinearApiError, LinearClient
+from src.linear.executor import (
+    LinearActionDraft,
+    PendingLinearActionStatus,
+    PendingLinearActionStore,
+    _run_action,
+)
 from src.linear.tooluse import LinearIssue, LinearTeam, LinearTools
 from src.slack.thread_context import ThreadContextStore
 
 logger = logging.getLogger(__name__)
 
+
 _SLACK_MENTION = re.compile(r"<@[^>]+>")
+
+
 _CONFIRMATION = re.compile(r"^(실행|실행해줘|실행합니다)$")
+
+
 _CANCELLATION = re.compile(r"^(취소|취소해줘|취소합니다)$")
+
+
 _ISSUE_IDENTIFIER = re.compile(r"\b([A-Za-z][A-Za-z0-9]*-\d+)\b")
+
+
 _FIELD_PATTERNS = {
     "team_id": re.compile(r"팀\s*ID\s*[:：]\s*([^\s]+)", re.IGNORECASE),
     "title": re.compile(
@@ -30,73 +41,24 @@ _FIELD_PATTERNS = {
     ),
     "state_id": re.compile(r"상태\s*ID\s*[:：]\s*([^\s]+)", re.IGNORECASE),
 }
+
+
 _CONNECTION_MARKERS = ("연결", "상태", "설정", "가능", "mcp")
+
+
 _CREATE_MARKERS = ("이슈 생성", "티켓 생성", "이슈 추가", "티켓 추가", "이슈 만들", "티켓 만들")
+
+
 _UPDATE_MARKERS = ("이슈 수정", "티켓 수정", "이슈 변경", "티켓 변경", "이슈 업데이트")
+
+
 _TEAM_MARKERS = ("팀 조회", "팀 목록", "팀 리스트")
+
+
 _ISSUE_MARKERS = ("이슈 조회", "이슈 목록", "티켓 조회", "티켓 목록")
+
+
 _PROJECT_WORK_MARKERS = ("프로젝트", "project", "테스트", "test", "pytest", "ruff", "mypy", "코드")
-
-
-class PendingLinearActionStatus(StrEnum):
-    MISSING = "missing"
-    READY = "ready"
-    EXPIRED = "expired"
-
-
-@dataclass(frozen=True)
-class LinearActionDraft:
-    """A typed mutation that has been previewed but not sent to Linear yet."""
-
-    operation: str
-    summary: str
-    variables: dict[str, str]
-
-
-@dataclass(frozen=True)
-class PendingLinearAction:
-    draft: LinearActionDraft
-    created_at: datetime
-
-
-class PendingLinearActionStore:
-    """Thread-keyed ephemeral mutation drafts with single-consumption semantics."""
-
-    def __init__(self, *, ttl: timedelta = timedelta(minutes=15)) -> None:
-        self.ttl = ttl
-        self._lock = Lock()
-        self._actions: dict[tuple[str, str], PendingLinearAction] = {}
-
-    def put(self, channel_id: str, thread_ts: str, draft: LinearActionDraft) -> None:
-        with self._lock:
-            self._actions[(channel_id, thread_ts)] = PendingLinearAction(
-                draft=draft, created_at=datetime.now(UTC)
-            )
-
-    def take(
-        self, channel_id: str, thread_ts: str
-    ) -> tuple[PendingLinearActionStatus, PendingLinearAction | None]:
-        with self._lock:
-            action = self._actions.pop((channel_id, thread_ts), None)
-        if action is None:
-            return PendingLinearActionStatus.MISSING, None
-        if datetime.now(UTC) - action.created_at > self.ttl:
-            return PendingLinearActionStatus.EXPIRED, None
-        return PendingLinearActionStatus.READY, action
-
-    def cancel(self, channel_id: str, thread_ts: str) -> PendingLinearActionStatus:
-        status, _ = self.take(channel_id, thread_ts)
-        return status
-
-    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
-        with self._lock:
-            action = self._actions.get((channel_id, thread_ts))
-            if action is None:
-                return False
-            if datetime.now(UTC) - action.created_at > self.ttl:
-                self._actions.pop((channel_id, thread_ts), None)
-                return False
-            return True
 
 
 class LinearIntegrationWorkflow:
@@ -257,23 +219,6 @@ class LinearIntegrationWorkflow:
             return "보류된 Linear 작업이 만료되었습니다."
         logger.info("linear_action_cancelled")
         return "보류된 Linear 작업을 취소했습니다. Linear에는 변경하지 않았습니다."
-
-
-def _run_action(tools: LinearTools, draft: LinearActionDraft) -> LinearIssue:
-    if draft.operation == "create_issue":
-        return tools.create_issue(
-            team_id=draft.variables["team_id"],
-            title=draft.variables["title"],
-            description=draft.variables.get("description"),
-        )
-    if draft.operation == "update_issue":
-        return tools.update_issue(
-            issue_id=draft.variables["issue_id"],
-            title=draft.variables.get("title"),
-            description=draft.variables.get("description"),
-            state_id=draft.variables.get("state_id"),
-        )
-    raise ValueError("허용되지 않은 Linear 작업입니다")
 
 
 def _is_linear_request(command: str) -> bool:
