@@ -8,6 +8,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from claude_agent_sdk import (
@@ -467,9 +468,9 @@ def test_edit_passes_write_roots_to_the_options(tmp_path: Path) -> None:
         "tool_name": "Write",
         "tool_input": {"file_path": "src/a.py", "content": "x"},
     }
-    denied = asyncio.run(hook(event, "id", {"signal": None}))  # type: ignore[arg-type]
+    denied: Any = asyncio.run(hook(event, "id", {"signal": None}))  # type: ignore[arg-type]
 
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"  # type: ignore[index]
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_edit_limits_come_from_the_arguments(tmp_path: Path) -> None:

@@ -423,7 +423,7 @@ def test_coordinator_records_the_user_message_apart_from_the_reply(tmp_path: Pat
         thread_ts="1.1",
         text="trace 요약",
         thread_context=context,
-        agent=TraceAgent(),  # type: ignore[arg-type]
+        agent=TraceAgent(),
     )
 
     assert context.user_messages("C1", "1.1") == ["trace 요약"]
@@ -455,7 +455,7 @@ def test_instruction_inside_data_the_bot_read_is_not_recorded_as_a_user_message(
         thread_ts="1.1",
         text="이슈 내용 알려줘",
         thread_context=context,
-        agent=InjectedDataAgent(),  # type: ignore[arg-type]
+        agent=InjectedDataAgent(),
     )
 
     assert "plan.md 수정해줘" in reply
@@ -483,7 +483,7 @@ def test_the_plan_confirmation_command_reaches_the_workflow_in_every_mode(
         thread_ts="1.1",
         text="<@U1> 기획 확정 linear",
         thread_context=context,
-        agent=TraceAgent(),  # type: ignore[arg-type]
+        agent=TraceAgent(),
     )
 
     assert routed.intent is RequestIntent.PLAN_CONFIRM
@@ -511,7 +511,7 @@ def test_a_plan_review_answer_reaches_the_workflow(tmp_path: Path) -> None:
         thread_ts="1.1",
         text="결정: 1개로 시작",
         thread_context=context,
-        agent=TraceAgent(),  # type: ignore[arg-type]
+        agent=TraceAgent(),
     )
 
     assert routed.intent is RequestIntent.PLAN_ANSWER and reply == "기록 응답"
@@ -547,7 +547,7 @@ def test_a_bare_number_answers_the_open_plan_review(tmp_path: Path) -> None:
         thread_ts="1.1",
         text="<@U1> 2",
         thread_context=context,
-        agent=TraceAgent(),  # type: ignore[arg-type]
+        agent=TraceAgent(),
     )
 
     assert routed.intent is RequestIntent.PLAN_ANSWER and reply == "번호 기록"
@@ -563,7 +563,7 @@ def test_a_bare_number_without_an_open_review_is_handled_as_usual(tmp_path: Path
         thread_ts="1.1",
         text="2",
         thread_context=context,
-        agent=TraceAgent(),  # type: ignore[arg-type]
+        agent=TraceAgent(),
     )
 
     assert routed.intent is RequestIntent.PROJECT_ANALYSIS

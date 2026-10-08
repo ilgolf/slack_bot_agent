@@ -119,7 +119,7 @@ def test_autopilot_progress_updates_the_initial_status_message(tmp_path: Path) -
     client = FakeSlackClient()
 
     class SayWithTs(RecordingSay):
-        def __call__(self, **kwargs: Any) -> dict[str, str]:
+        def __call__(self, **kwargs: Any) -> dict[str, str]:  # type: ignore[override]
             super().__call__(**kwargs)
             return {"ts": "2.2"}
 
