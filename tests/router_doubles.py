@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.request_router import RequestIntent, RequestRouter, RoutedRequest
+from src.slack.request_router import RequestIntent, RequestRouter, RoutedRequest
 
 _CODE_WORK_WORDS = ("수정", "진행", "plan", "이어서")
 

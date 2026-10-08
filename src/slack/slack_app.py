@@ -1,0 +1,158 @@
+"""Slack Bolt integration.
+
+This project runs its own separate Slack app (own bot token/signing secret), so it
+can run side by side with v1 during migration — see plan.md's design summary.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from typing import Any
+from uuid import uuid4
+
+from slack_bolt import App
+from slack_bolt.adapter.socket_mode import SocketModeHandler
+
+from src.code.agent import AnalysisAgent
+from src.core.config import Settings, resolve_code_work_mode
+from src.core.observability import request_log_context
+from src.core.run_state import ThreadRunStore
+from src.linear.workflow import LinearIntegrationWorkflow
+from src.slack.request_coordinator import RequestCoordinator
+from src.slack.request_router import RequestIntent, RequestRouter
+from src.slack.slack_thread import SlackThreadReader
+from src.slack.thread_context import ThreadContextStore
+from src.slack.thread_summarizer import ThreadSummarizer
+from src.slack.thread_summary_workflow import ThreadSummaryWorkflow
+from src.slack.workflow_factory import build_execution_workflow
+
+
+class SlackConfigError(RuntimeError):
+    """Raised when Slack credentials needed to build the Bolt app are missing."""
+
+
+def handle_app_mention(
+    event: Mapping[str, Any],
+    say: Callable[..., Any],
+    *,
+    thread_context: ThreadContextStore,
+    agent: AnalysisAgent,
+    coordinator: RequestCoordinator,
+    run_store: ThreadRunStore | None = None,
+    client: Any | None = None,
+) -> None:
+    channel_id = event["channel"]
+    thread_ts = event.get("thread_ts", event["ts"])
+    text = event["text"]
+    event_id = str(event.get("event_id", event["ts"]))
+
+    if run_store is not None and not run_store.begin(
+        event_id=event_id,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+    ):
+        return
+
+    initial_status = "분석 중입니다…"
+    intent = coordinator.router.route(text).intent
+    if intent is RequestIntent.CODE_WORK:
+        initial_status = "계획 중입니다…"
+    elif intent in {RequestIntent.LINEAR_READ, RequestIntent.LINEAR_MUTATION}:
+        initial_status = "Linear 작업 중입니다…"
+    elif intent is RequestIntent.THREAD_SUMMARY:
+        initial_status = "스레드 요약 중입니다…"
+    status_message = say(text=initial_status, thread_ts=thread_ts)
+    on_progress = _progress_updater(client, channel_id, status_message)
+    if run_store is not None:
+        run_store.set_running(channel_id=channel_id, thread_ts=thread_ts)
+
+    with request_log_context(uuid4().hex, channel_id, thread_ts):
+        try:
+            _, response = coordinator.process(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                text=text,
+                thread_context=thread_context,
+                agent=agent,
+                on_progress=on_progress,
+            )
+        except Exception:
+            if run_store is not None:
+                run_store.fail(channel_id=channel_id, thread_ts=thread_ts)
+            raise
+
+    say(text=response, thread_ts=thread_ts)
+    if run_store is not None:
+        run_store.complete(channel_id=channel_id, thread_ts=thread_ts)
+
+
+def _progress_updater(
+    client: Any | None, channel_id: str, status_message: Any
+) -> Callable[[str], None] | None:
+    """Edit the initial status message in place; no client or `ts` means no updates."""
+    ts = status_message.get("ts") if hasattr(status_message, "get") else None
+    if client is None or not ts:
+        return None
+
+    def update(text: str) -> None:
+        client.chat_update(channel=channel_id, ts=ts, text=text)
+
+    return update
+
+
+def build_slack_app(settings: Settings) -> App:
+    if not settings.slack_bot_token:
+        raise SlackConfigError("SLACK_BOT_TOKEN is required to run the Slack app")
+
+    return App(
+        token=settings.slack_bot_token,
+        token_verification_enabled=False,
+    )
+
+
+def start_socket_mode(
+    settings: Settings,
+    *,
+    thread_context: ThreadContextStore,
+    agent: AnalysisAgent,
+    thread_summarizer: ThreadSummarizer | None = None,
+) -> None:
+    """Run the Slack app through Socket Mode until the process is stopped."""
+    if not settings.slack_app_token:
+        raise SlackConfigError("SLACK_APP_TOKEN is required to run Socket Mode")
+
+    slack_app = build_slack_app(settings)
+    run_store = ThreadRunStore()
+    linear_workflow = LinearIntegrationWorkflow(settings=settings)
+    execution_workflow = build_execution_workflow(settings)
+    thread_summary_workflow = (
+        ThreadSummaryWorkflow(
+            reader=SlackThreadReader(slack_app.client), summarizer=thread_summarizer
+        )
+        if thread_summarizer is not None
+        else None
+    )
+    coordinator = RequestCoordinator(
+        router=RequestRouter(code_work_mode=resolve_code_work_mode(settings)[0]),
+        execution_workflow=execution_workflow,
+        linear_workflow=linear_workflow,
+        thread_summary_workflow=thread_summary_workflow,
+    )
+
+    @slack_app.event("app_mention")
+    def _on_app_mention(event: Mapping[str, Any], say: Callable[..., Any], client: Any) -> None:
+        handle_app_mention(
+            event,
+            say,
+            thread_context=thread_context,
+            agent=agent,
+            run_store=run_store,
+            coordinator=coordinator,
+            client=client,
+        )
+
+    @slack_app.event("message")
+    def _ignore_message_event() -> None:
+        """Acknowledge subscribed message events that this bot does not analyze."""
+
+    SocketModeHandler(slack_app, settings.slack_app_token).start()  # type: ignore[no-untyped-call]

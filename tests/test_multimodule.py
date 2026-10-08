@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from src.execution_workflow import (
+from src.code.workflow import (
     ExecutionPlan,
     ExecutionRisk,
     ExecutionStep,
@@ -63,16 +63,16 @@ def test_plan_follow_accepts_new_file_under_module_src(tmp_path: Path) -> None:
 
 
 def test_plan_prompt_follows_existing_module_layout_instead_of_fixed_src() -> None:
-    from src.code_plan_prompts import _CODE_PLAN_POLICY
+    from src.code.prompts import _CODE_PLAN_POLICY
 
     assert "src/ 아래" not in _CODE_PLAN_POLICY
     assert "모듈" in _CODE_PLAN_POLICY
 
 
 def test_plan_for_project_without_pyproject_drops_verification_commands(tmp_path: Path) -> None:
-    from src.execution_workflow import ExecutionWorkflow
-    from src.project_resolver import ProjectResolver
-    from src.thread_context import ThreadContextStore
+    from src.code.workflow import ExecutionWorkflow
+    from src.core.project_resolver import ProjectResolver
+    from src.slack.thread_context import ThreadContextStore
 
     project = tmp_path / "logifine-api-tbd"
     (project / "api" / "src" / "main").mkdir(parents=True)
@@ -98,9 +98,9 @@ def test_plan_for_project_without_pyproject_drops_verification_commands(tmp_path
 
 
 def test_plan_for_project_with_pyproject_keeps_verification_commands(tmp_path: Path) -> None:
-    from src.execution_workflow import ExecutionWorkflow
-    from src.project_resolver import ProjectResolver
-    from src.thread_context import ThreadContextStore
+    from src.code.workflow import ExecutionWorkflow
+    from src.core.project_resolver import ProjectResolver
+    from src.slack.thread_context import ThreadContextStore
 
     project = tmp_path / "py-project"
     project.mkdir()
@@ -129,7 +129,7 @@ def test_plan_for_project_with_pyproject_keeps_verification_commands(tmp_path: P
 
 
 def test_plan_preview_warns_when_no_verification_will_run() -> None:
-    from src.execution_workflow import GitState, render_plan_preview
+    from src.code.workflow import GitState, render_plan_preview
 
     preview = render_plan_preview(_module_plan("api/src/main/X.java"), GitState(True, []))
 
@@ -137,7 +137,7 @@ def test_plan_preview_warns_when_no_verification_will_run() -> None:
 
 
 def test_execution_result_warns_when_no_verification_ran() -> None:
-    from src.execution_workflow import ExecutionResult, render_execution_result
+    from src.code.workflow import ExecutionResult, render_execution_result
 
     result = ExecutionResult(
         changed_files=["api/src/main/X.java"],
@@ -152,7 +152,7 @@ def test_execution_result_warns_when_no_verification_ran() -> None:
 
 
 def test_analysis_prompt_points_to_find_files_for_deep_or_multi_module_layouts() -> None:
-    from src.langchain_agent import _PROMPT_TEMPLATE
+    from src.code.langchain_agent import _PROMPT_TEMPLATE
 
     assert "멀티 모듈" in _PROMPT_TEMPLATE
     assert "find_files" in _PROMPT_TEMPLATE
@@ -160,14 +160,14 @@ def test_analysis_prompt_points_to_find_files_for_deep_or_multi_module_layouts()
 
 
 def test_analysis_prompt_tells_model_to_narrow_a_truncated_find_files_result() -> None:
-    from src.langchain_agent import _PROMPT_TEMPLATE
+    from src.code.langchain_agent import _PROMPT_TEMPLATE
 
     assert "결과가 잘렸습니다" in _PROMPT_TEMPLATE
     assert "relative_path" in _PROMPT_TEMPLATE
 
 
 def test_execution_result_does_not_claim_verification_when_none_ran() -> None:
-    from src.execution_workflow import ExecutionResult, render_execution_result
+    from src.code.workflow import ExecutionResult, render_execution_result
 
     result = ExecutionResult(
         changed_files=["api/src/main/X.java"], diffs=[], checks=[], remaining_risks=[]
@@ -180,7 +180,7 @@ def test_execution_result_does_not_claim_verification_when_none_ran() -> None:
 
 
 def test_execution_result_keeps_verified_headline_when_checks_passed() -> None:
-    from src.execution_workflow import CommandResult, ExecutionResult, render_execution_result
+    from src.code.workflow import CommandResult, ExecutionResult, render_execution_result
 
     result = ExecutionResult(
         changed_files=["api/src/main/X.java"],

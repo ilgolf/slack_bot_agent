@@ -478,3 +478,21 @@ plan-first로 에이전트가 쓴 `docs/linear/plan.md`(2026-10-07)에서 규칙
 
 - [ ] 열린 질문이 있는 기획에서 `기획 확정 linear`가 질문을 하나씩 묻고, `추천대로`·`결정:`이 문서에 기록된다
 - [ ] 모두 정해진 뒤 `기획 확정 linear`가 확정되고, `linear 개발 진행해`가 코드를 쓴다
+
+---
+
+## Phase 32: 패키지 구조를 영역별 PEV로 (2026-10-08 사용자 지시, 구조 전용)
+
+`src/`의 평평한 46개 모듈을 공용(`core`·`slack`)과 영역(`linear`·`code`·`notion`)으로 나누고, 영역마다 PEV 골격(`plan`/`executor`/`tooluse`/`verifier`/`workflow`)을 둔다. 최상위 패키지 이름은 `src`를 유지한다. 구조 변경과 동작 변경은 커밋을 나눈다. 이동마다 `ruff`·`mypy`·`pytest`가 통과해야 한다. 작업 방식: 사용자 지시로 `go` 단위 정지 없이 끝까지 진행한다(TDD는 유지).
+
+### A. 이동 (기계적, 동작 불변)
+- [x] 공용 `core/`(config, observability, message_text, run_state, harness, project_resolver, plan_first, plan_guard, project_guidance, skill_allowlist, agent_trace)와 `slack/`(입출력·라우팅)로 옮기고 import·테스트 경로를 고친다. `HARNESS_DIR`은 새 위치에서도 `harness/`를 가리킨다
+- [x] `linear/`(client, tooluse, plan, workflow)와 `code/`(분석 에이전트·SDK 러너·가드·워크스페이스·`edit_review`→`verifier`)로 옮긴다
+- [x] 테스트를 `tests/<패키지>/`로 같은 구조로 옮긴다
+
+### B. PEV 분해 (구조 전용, 동작 불변)
+- [ ] `execution_workflow.py`의 계획 타입·검증·렌더링을 `code/plan.py`, 도구 경계(`ProjectExecutionTools` 등)를 `code/tooluse.py`, 검증 결과 타입을 `code/verifier.py`로 옮긴다. `ExecutionWorkflow` 본체는 `code/workflow.py`에 남는다
+- [ ] `linear/`의 쓰기 게이트(`LinearActionDraft`, `PendingLinearActionStore`, `_run_action`)를 `linear/executor.py`로 분리한다. `linear/verifier.py`와 `notion/`은 자리만 둔다(내용 없음, 모듈 docstring으로 역할 기록)
+
+### C. 문서
+- [x] README·`harness/`·`docs/`의 경로(`src/…`)와 `python -m src.socket_mode`를 새 경로로 고친다

@@ -1,16 +1,16 @@
 # Linear Agent PEV(Plan-Execute-Verify) 설계
 
 > 이전 기록 (2026-10-07): Slack 스레드 `C0C1MU807CG-1791264847-508429`에서 에이전트가 쓴 초안을 `docs/linear/`로 옮겼다. 본문은 원문 그대로다.
-> 원문 1절·7.1절·Q1이 말하는 `src/linear_agent_plan.py`(정규식 파서)는 이 저장소에 없다. 그 스레드에서 이 설계를 바탕으로 슬라이스 1(계획 타입·검증기)이 `src/linear_pev_plan.py`로 구현되었고(`src/linear_pev_plan.py`, `tests/test_linear_pev_plan.py`로 이 저장소에 가져왔다, 2026-10-07). 열린 질문(9절)은 모두 미결이다.
+> 원문 1절·7.1절·Q1이 말하는 `src/linear_agent_plan.py`(정규식 파서)는 이 저장소에 없다. 그 스레드에서 이 설계를 바탕으로 슬라이스 1(계획 타입·검증기)이 `src/linear/plan.py`로 구현되었고(`src/linear/plan.py`, `tests/linear/test_plan.py`로 이 저장소에 가져왔다, 2026-10-07). 열린 질문(9절)은 모두 미결이다.
 
 상태: 설계 초안. 코드는 바꾸지 않았고, 이 문서를 쓰는 환경에서는 셸이 없어 코드·테스트를 실행하지 못했다. 아래 "현재 상태"는 파일을 읽어서 확인한 것이고, "설계"는 아직 구현·검증되지 않은 제안이다.
 
 ## 1. 현재 상태 (읽어서 확인한 것)
 
-- `src/linear_client.py`: 문서 문자열과 variables를 POST하는 전송 계층. 실패는 모두 `LinearApiError`로 바뀌고 상세 내용은 노출하지 않는다.
-- `src/linear_tools.py`: 고정 GraphQL 5개(`list_teams`, `list_issues`, `get_issue`, `create_issue`, `update_issue`). `create_issue`는 `team_id`, `update_issue`는 `state_id`를 UUID 그대로 받는다. 상태 목록을 조회하는 operation은 없다. 변경 쿼리의 반환 필드는 `id identifier title url`뿐이라 변경 후 상태·설명은 응답에 없다.
-- `src/linear_workflow.py`: 정규식(`_FIELD_PATTERNS`, `_CREATE_MARKERS` 등)으로 고정 문법을 파싱한다. 쓰기는 `LinearActionDraft(operation, summary, variables: dict[str, str])`를 `PendingLinearActionStore`에 넣고(`put`), `실행`이 오면 `take`로 꺼내 `_run_action`을 호출한다. 저장소는 `(channel_id, thread_ts)`당 초안 1개이고 `put`은 덮어쓴다. `take`는 pop이라 한 번만 소비되며, TTL 기본값은 15분이다. 실패 시 "자동 재시도하지 않았습니다"라고 답한다. `process`는 `실행`/`취소` 판정을 Linear 요청 판정보다 먼저 한다.
-- `src/request_coordinator.py`가 `linear_workflow.process`와 `has_pending`을 호출한다 (호출 위치만 grep으로 확인, 내부 분기는 읽지 않았다).
+- `src/linear/client.py`: 문서 문자열과 variables를 POST하는 전송 계층. 실패는 모두 `LinearApiError`로 바뀌고 상세 내용은 노출하지 않는다.
+- `src/linear/tooluse.py`: 고정 GraphQL 5개(`list_teams`, `list_issues`, `get_issue`, `create_issue`, `update_issue`). `create_issue`는 `team_id`, `update_issue`는 `state_id`를 UUID 그대로 받는다. 상태 목록을 조회하는 operation은 없다. 변경 쿼리의 반환 필드는 `id identifier title url`뿐이라 변경 후 상태·설명은 응답에 없다.
+- `src/linear/workflow.py`: 정규식(`_FIELD_PATTERNS`, `_CREATE_MARKERS` 등)으로 고정 문법을 파싱한다. 쓰기는 `LinearActionDraft(operation, summary, variables: dict[str, str])`를 `PendingLinearActionStore`에 넣고(`put`), `실행`이 오면 `take`로 꺼내 `_run_action`을 호출한다. 저장소는 `(channel_id, thread_ts)`당 초안 1개이고 `put`은 덮어쓴다. `take`는 pop이라 한 번만 소비되며, TTL 기본값은 15분이다. 실패 시 "자동 재시도하지 않았습니다"라고 답한다. `process`는 `실행`/`취소` 판정을 Linear 요청 판정보다 먼저 한다.
+- `src/slack/request_coordinator.py`가 `linear_workflow.process`와 `has_pending`을 호출한다 (호출 위치만 grep으로 확인, 내부 분기는 읽지 않았다).
 - **`src/linear_agent_plan.py`는 이 작업 디렉터리에 없다.** `**/linear_agent*` glob과 `linear_agent_plan` grep 모두 결과가 없었다. 요청에는 "이미 만들어져 있다"고 되어 있으니 다른 브랜치/체크아웃에 있을 수 있다. 그래서 그 파일의 현재 내용은 읽지 못했고, 4절의 변경 방향은 "정규식으로 고정 문법을 다시 파싱한다"는 요청의 설명만 전제로 한 것이다. 실제 파일을 확인한 뒤 맞춰야 한다.
 - 기존 `.omx/plans/grounded-agent-linear-design.md`는 "고정 operation만 사용, 범용 GraphQL 금지, 변경 승인은 코드가 결정"이라는 원칙을 이미 적고 있다. 이 문서는 그 원칙을 유지한다.
 
@@ -133,7 +133,7 @@ V의 출력은 사용자 응답에 반영한다: 일치하면 "✅ 적용 및 �
 
 각 슬라이스는 실제 모델 호출 없이 fake로 테스트한다. 아래 인수 조건은 *목표*이고 아직 실행해 확인한 것이 없다.
 
-0. **특성 테스트 보강**: 현재 `tests/test_linear_workflow.py`의 동작(1회 소비, TTL, 취소, 실패 시 무재시도)을 신규 코드가 건드리지 않음을 고정. (기존 테스트 내용은 이번에 읽지 않았다. 먼저 읽고 부족한 부분만 추가.)
+0. **특성 테스트 보강**: 현재 `tests/linear/test_workflow.py`의 동작(1회 소비, TTL, 취소, 실패 시 무재시도)을 신규 코드가 건드리지 않음을 고정. (기존 테스트 내용은 이번에 읽지 않았다. 먼저 읽고 부족한 부분만 추가.)
 1. **P-타입과 검증기**: `LinearPlan`/`PlanStep`/`validate_plan`과 4절의 거부 조건별 단위 테스트. LLM 없음. `linear_agent_plan.py`를 이 역할로 개편(7.1).
 2. **P-LLM planner**: 구조화 출력 호출과 fake 모델 테스트. 잘못된 출력은 전부 `PlanRejected`. 아직 어디에도 연결하지 않는다.
 3. **E-읽기와 해석기**: 신규 고정 read operation(상태 목록 등), 팀 키/상태 이름 해석, 읽기 단계 즉시 실행, `StepRef` 해석. 모호/0건 처리.
