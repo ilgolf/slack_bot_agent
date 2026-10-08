@@ -3261,7 +3261,7 @@ def test_an_applied_edit_reports_what_the_agent_said_before_the_diffs(tmp_path: 
     class Reporter(EditAgent):
         def edit_code(self, prompt: str, worktree: Path, **kwargs: Any) -> str:
             super().edit_code(prompt, worktree, **kwargs)
-            return "슬라이스 2까지 했습니다. 슬라이스 3은 기획에 없는 operation이 필요해 멈췄습니다."
+            return "슬라이스 2까지 했습니다. 슬라이스 3은 선행 결정이 없어 멈췄습니다."
 
     response = _ask_in_mode(
         workflow, context, Reporter(_write("README.md", "after\n")), "my-project README.md 수정해줘"
