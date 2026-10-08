@@ -8,14 +8,21 @@ reports violations as short messages that name paths but never carry file conten
 from __future__ import annotations
 
 import difflib
+import hashlib
 import posixpath
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.code.edit_guard import is_within_roots
+from src.code.plan import ExecutionPlan, render_code_work_status
+from src.code.tooluse import CommandResult, VerificationStatus, _redact_output
 from src.code.workspace import GitCommands
-from src.core.plan_first import CONFIRMED, is_plan_path, parse_status
+from src.core.plan_first import (
+    CONFIRMED,
+    is_plan_path,
+    parse_status,
+)
 from src.core.plan_guard import (
     MAX_WRITE_BYTES,
     PLAN_MAX_TOTAL_BYTES,
@@ -25,6 +32,7 @@ from src.core.plan_guard import (
     is_risky_path,
     is_secret_path,
 )
+from src.core.run_state import CodeWorkState
 
 MAX_CHANGED_FILES = 20
 _UNTRACKED = "??"
@@ -174,3 +182,107 @@ def _diff(git: GitCommands, worktree: Path, status: str, path: str, after: str) 
         return git(worktree, "diff", "HEAD", "--", path)
     except RuntimeError:
         return ""
+
+
+@dataclass(frozen=True)
+class ExecutionResult:
+    changed_files: list[str]
+    diffs: list[str]
+    checks: list[CommandResult]
+    remaining_risks: list[str]
+    repair_attempts: int = 0
+    repair_failure_reason: str | None = None
+    workspace_branch: str | None = None
+    workspace_path: str | None = None
+    rollback_warning: str | None = None
+
+
+def _outcome_line(result: ExecutionResult) -> str:
+    if result.repair_failure_reason:
+        return f"❌ 구현 실패: {result.repair_failure_reason}"
+    if not result.checks:
+        return "✅ 구현 완료 (자동 검증 없음)"
+    if not all(check.success for check in result.checks):
+        return "⚠️ 변경 적용, 검증 실패"
+    if result.repair_attempts:
+        return f"✅ 구현 완료 (자동 복구 {result.repair_attempts}회)"
+    return render_code_work_status(CodeWorkState.SUCCEEDED)
+
+
+def render_execution_result(plan: ExecutionPlan, result: ExecutionResult) -> str:
+    changes = "\n".join(f"- `{path}`" for path in result.changed_files) or "- 파일 변경 없음"
+    checks = "\n".join(_render_check(check) for check in result.checks) or "- 실행한 검증 명령 없음"
+    risks = "\n".join(f"- {risk}" for risk in result.remaining_risks) or "- 없음"
+    instructions = ", ".join(f"`{item}`" for item in plan.applied_agents) or "없음"
+    skills = ", ".join(f"`{item}`" for item in plan.applied_skills) or "없음"
+    outcome = _outcome_line(result)
+    workspace = ""
+    if result.workspace_branch is not None:
+        workspace = (
+            f"작업 브랜치: `{result.workspace_branch}`\n작업 경로: `{result.workspace_path}`\n"
+            "원본 체크아웃은 변경하지 않았습니다. 결과를 버리려면 `폐기`라고 보내세요.\n"
+        )
+    elif result.rollback_warning is not None:
+        workspace = f"⚠️ {result.rollback_warning}\n"
+    return (
+        f"{outcome}\n{workspace}변경 파일:\n{changes}\nDiff 요약: {_diff_summary(result.diffs)}\n"
+        f"검증 결과:\n{checks}\n"
+        f"적용 AGENTS.md: {instructions}\n적용 Skill: {skills}\n남은 위험:\n{risks}"
+    )
+
+
+def render_execution_failure(
+    plan: ExecutionPlan, reason: str, changed_files: list[str] | None = None
+) -> str:
+    applied = "\n".join(f"- `{path}`" for path in changed_files or []) or "- 없음"
+    return (
+        "❌ 실행 실패\n"
+        f"프로젝트: `{plan.project_name}`\n원인: {reason}\n"
+        f"이미 적용된 파일:\n{applied}\n"
+        "남은 단계는 진행하지 않았습니다. 위 파일들의 Git diff를 확인한 뒤 새 계획을 만들어 주세요."
+    )
+
+
+def _verification_fingerprint(checks: Sequence[CommandResult]) -> str:
+    payload = [(check.name, check.status, check.output) for check in checks if not check.success]
+    return hashlib.sha256(repr(payload).encode()).hexdigest()
+
+
+def _remaining_risks(checks: list[CommandResult]) -> list[str]:
+    if not checks:
+        return ["자동 검증 없이 적용됐습니다. 변경 내용을 직접 확인해 주세요."]
+    if any(check.status is VerificationStatus.ENVIRONMENT_ERROR for check in checks):
+        return ["검증 실행 환경 오류를 해결한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
+    if any(check.status is VerificationStatus.TIMED_OUT for check in checks):
+        return ["검증 시간 초과 원인을 확인한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
+    if any(not check.success for check in checks):
+        return ["실패한 검증을 수정한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
+    return []
+
+
+def _render_check(check: CommandResult) -> str:
+    if check.success:
+        return f"- ✅ {check.name}"
+    detail = _redact_output(check.output).replace("\n", " ")[:300] or "출력 없음"
+    label = {
+        VerificationStatus.ENVIRONMENT_ERROR: "실행 환경 오류",
+        VerificationStatus.TIMED_OUT: "시간 초과",
+    }.get(check.status or VerificationStatus.FAILED)
+    prefix = f"- ❌ {check.name} ({label})" if label else f"- ❌ {check.name}"
+    return f"{prefix}: {detail}"
+
+
+def _diff_summary(diffs: list[str]) -> str:
+    added = sum(
+        1
+        for diff in diffs
+        for line in diff.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+    removed = sum(
+        1
+        for diff in diffs
+        for line in diff.splitlines()
+        if line.startswith("-") and not line.startswith("---")
+    )
+    return f"+{added}/-{removed}줄"

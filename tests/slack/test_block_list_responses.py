@@ -9,8 +9,8 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, BaseMessage
 
 from src.code.langchain_agent import LangChainAnalysisAgent, _parse_analysis_result
+from src.code.plan import ExecutionPlan, ExecutionRisk, ExecutionStep
 from src.code.planner import LangChainNextActionPlanner
-from src.code.workflow import ExecutionPlan, ExecutionRisk, ExecutionStep
 from src.core.project_resolver import ProjectResolver
 
 

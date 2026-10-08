@@ -6,16 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from src.code.workflow import (
-    CommandResult,
-    ExecutionPlan,
-    ExecutionRisk,
-    ExecutionStep,
-    ExecutionWorkflow,
-    ProjectExecutionTools,
-    _is_autopilot_request,
-    next_unchecked_item,
-)
+from src.code.plan import ExecutionPlan, ExecutionRisk, ExecutionStep, next_unchecked_item
+from src.code.tooluse import CommandResult, ProjectExecutionTools
+from src.code.workflow import ExecutionWorkflow, _is_autopilot_request
 from src.core.config import Settings
 from src.core.project_resolver import ProjectResolver
 from src.linear.workflow import LinearIntegrationWorkflow

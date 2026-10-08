@@ -14,21 +14,16 @@ from time import monotonic
 from typing import Protocol
 
 from src.code.agent import AnalysisAgentError, AnalysisResult, insufficient_evidence_result
+from src.code.context import AppliedSkill, ProjectContext
 from src.code.general_answer import build_general_answer_prompt
+from src.code.plan import ExecutionPlan, ExecutionStep, ExistingFile
 from src.code.prompts import (
     build_code_plan_prompt,
     build_repair_prompt,
     parse_plan_response,
     parse_repair_response,
 )
-from src.code.workflow import (
-    AppliedSkill,
-    CommandResult,
-    ExecutionPlan,
-    ExecutionStep,
-    ExistingFile,
-    ProjectContext,
-)
+from src.code.tooluse import CommandResult
 from src.core.agent_trace import AgentTraceRecorder, ThreadTraceStore
 from src.core.project_resolver import ProjectResolver
 from src.slack.request_classifier import AnalysisRequest, RequestKind, classify_request

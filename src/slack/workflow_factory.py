@@ -6,7 +6,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from src.code.workflow import ExecutionWorkflow, SkillRegistry
+from src.code.context import SkillRegistry
+from src.code.workflow import ExecutionWorkflow
 from src.code.workspace import ThreadWorkspaces
 from src.core.config import Settings, resolve_code_work_mode
 from src.core.project_resolver import ProjectResolver

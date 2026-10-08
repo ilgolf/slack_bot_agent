@@ -18,10 +18,11 @@ from langchain_core.tools import StructuredTool
 
 from src.code.agent import AnalysisResult, PlanResponseFormatError
 from src.code.analysis_tools import find_files, list_files, read_file
+from src.code.context import ProjectContextLoader
 from src.code.langchain_agent import LangChainAnalysisAgent
 from src.code.loop import AgentPlan, ToolCall
+from src.code.plan import ExistingFile
 from src.code.planner import LangChainNextActionPlanner
-from src.code.workflow import ExistingFile, ProjectContextLoader
 from src.core.project_resolver import ProjectResolver
 
 

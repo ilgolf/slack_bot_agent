@@ -26,7 +26,9 @@ from src.code.agent import (
     insufficient_evidence_result,
 )
 from src.code.analysis_tools import read_file
+from src.code.context import AppliedSkill, ProjectContext
 from src.code.loop import AgentPlan, CodeAgentLoop, FinalAnswer, FinalStatus
+from src.code.plan import ExecutionPlan, ExecutionStep, ExistingFile
 from src.code.planner import LangChainNextActionPlanner
 from src.code.prompts import (
     build_code_plan_prompt,
@@ -36,14 +38,7 @@ from src.code.prompts import (
 )
 from src.code.tool_policy import ToolCategory
 from src.code.tool_registry import ToolRegistry, definition
-from src.code.workflow import (
-    AppliedSkill,
-    CommandResult,
-    ExecutionPlan,
-    ExecutionStep,
-    ExistingFile,
-    ProjectContext,
-)
+from src.code.tooluse import CommandResult
 from src.core.agent_trace import AgentTraceRecorder, ThreadTraceStore
 from src.core.message_text import content_text
 from src.core.project_resolver import ProjectResolver

@@ -5,14 +5,14 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from src.code.workflow import (
+from src.code.plan import (
     ExecutionPlan,
     ExecutionRisk,
     ExecutionStep,
     _is_source_or_test_path,
-    _remaining_risks,
     _validate_plan,
 )
+from src.code.verifier import _remaining_risks
 
 
 def test_module_source_path_is_a_code_path() -> None:
@@ -129,7 +129,8 @@ def test_plan_for_project_with_pyproject_keeps_verification_commands(tmp_path: P
 
 
 def test_plan_preview_warns_when_no_verification_will_run() -> None:
-    from src.code.workflow import GitState, render_plan_preview
+    from src.code.context import GitState
+    from src.code.plan import render_plan_preview
 
     preview = render_plan_preview(_module_plan("api/src/main/X.java"), GitState(True, []))
 
@@ -137,7 +138,7 @@ def test_plan_preview_warns_when_no_verification_will_run() -> None:
 
 
 def test_execution_result_warns_when_no_verification_ran() -> None:
-    from src.code.workflow import ExecutionResult, render_execution_result
+    from src.code.verifier import ExecutionResult, render_execution_result
 
     result = ExecutionResult(
         changed_files=["api/src/main/X.java"],
@@ -167,7 +168,7 @@ def test_analysis_prompt_tells_model_to_narrow_a_truncated_find_files_result() -
 
 
 def test_execution_result_does_not_claim_verification_when_none_ran() -> None:
-    from src.code.workflow import ExecutionResult, render_execution_result
+    from src.code.verifier import ExecutionResult, render_execution_result
 
     result = ExecutionResult(
         changed_files=["api/src/main/X.java"], diffs=[], checks=[], remaining_risks=[]
@@ -180,7 +181,8 @@ def test_execution_result_does_not_claim_verification_when_none_ran() -> None:
 
 
 def test_execution_result_keeps_verified_headline_when_checks_passed() -> None:
-    from src.code.workflow import CommandResult, ExecutionResult, render_execution_result
+    from src.code.tooluse import CommandResult
+    from src.code.verifier import ExecutionResult, render_execution_result
 
     result = ExecutionResult(
         changed_files=["api/src/main/X.java"],

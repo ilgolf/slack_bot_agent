@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.code.agent import AnalysisResult
-from src.code.workflow import ExecutionPlan, ExecutionRisk, ExecutionStep, ExecutionWorkflow
+from src.code.plan import ExecutionPlan, ExecutionRisk, ExecutionStep
+from src.code.workflow import ExecutionWorkflow
 from src.core.agent_trace import AgentTraceRecorder, ThreadTraceStore
 from src.core.config import Settings
 from src.core.plan_first import PlanAnswer

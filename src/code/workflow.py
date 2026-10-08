@@ -6,28 +6,23 @@ expiry, and the final verification report.  Local ``AGENTS.md`` and trusted
 skills are context for planning only; neither can relax these checks.
 """
 
+
 from __future__ import annotations
 
-import difflib
-import hashlib
 import inspect
-import json
 import logging
-import os
 import re
 import subprocess
-import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
-from enum import StrEnum
 from functools import partial
 from pathlib import Path
-from threading import Lock
-from typing import Any, Literal
+from typing import Any
 
 from src.code.agent import AnalysisAgentError, PlanResponseFormatError
+from src.code.context import ProjectContext, ProjectContextLoader, SkillRegistry
+from src.code.executor import AwaitingProjectStore, PendingPlanStatus, PendingPlanStore
 from src.code.markers import (
     CODE_INTEGRATION_MARKERS,
     CODE_MARKERS,
@@ -36,10 +31,38 @@ from src.code.markers import (
     PLAN_CONTINUATION_MARKERS,
     is_plan_follow_work_request,
 )
-from src.code.verifier import review_worktree
+from src.code.plan import (
+    _UNCHECKED_ITEM,
+    DEFAULT_MAX_AUTO_REPAIRS,
+    DEFAULT_MAX_AUTOPILOT_ITEMS,
+    ExecutionPlan,
+    ExecutionRisk,
+    ExistingFile,
+    _create_plan_with_format_retry,
+    _is_source_or_test_path,
+    _linear_planning_sources,
+    _preview_diffs,
+    _read_existing_files,
+    _render_diff_excerpt,
+    _repair_fingerprint,
+    _validate_plan,
+    _validate_repair_steps,
+    next_unchecked_item,
+    render_plan_preview,
+)
+from src.code.tooluse import CommandResult, ProjectExecutionTools, VerificationStatus, _project_path
+from src.code.verifier import (
+    ExecutionResult,
+    _diff_summary,
+    _remaining_risks,
+    _render_check,
+    _verification_fingerprint,
+    render_execution_failure,
+    render_execution_result,
+    review_worktree,
+)
 from src.code.workspace import ThreadWorkspaces, WorkspaceError
 from src.core.harness import load_file
-from src.core.message_text import content_text
 from src.core.plan_first import (
     CONFIRMED,
     MAX_DECISION_CHARS,
@@ -59,15 +82,9 @@ from src.core.plan_first import (
     with_status,
 )
 from src.core.plan_guard import (
-    MAX_WRITE_BYTES,
-    PLAN_MAX_TOTAL_BYTES,
-    REPAIR_MAX_TOTAL_BYTES,
     is_protected_meta_path,
     is_risky_path,
     is_secret_path,
-    reject_blanking,
-    reject_mass_deletion,
-    reject_oversized_total,
 )
 from src.core.project_guidance import guidance_files
 from src.core.project_resolver import (
@@ -77,34 +94,57 @@ from src.core.project_resolver import (
     UnknownProject,
 )
 from src.core.run_state import CodeWorkState, CodeWorkStateStore
-from src.core.skill_allowlist import claude_skill_names, project_allowlist
+from src.core.skill_allowlist import claude_skill_names
 from src.slack.request_classifier import classify_request, find_project_name_candidates
 from src.slack.request_router import RequestIntent, RequestRouter
 from src.slack.thread_context import ThreadContextStore
 
 logger = logging.getLogger(__name__)
 
+
 _SLACK_MENTION = re.compile(r"<@[^>]+>")
+
+
 _CONFIRMATION = re.compile(r"^(실행|실행해줘|실행합니다)$")
+
+
 _CANCELLATION = re.compile(r"^(취소|취소해줘|취소합니다)$")
+
+
 _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
+
+
 _PLAN_REVIEW_TTL_SECONDS = 30 * 60
+
+
 _NO_PLAN_REVIEW = (
     "진행 중인 기획 검토가 없습니다. `기획 확정 <영역>`을 보내 열린 질문 확인을 시작해 주세요."
 )
+
+
 _NO_ROLLBACK_WARNING = "롤백 불가: 이 프로젝트는 worktree로 격리할 수 없어 원본에 직접 적용됩니다."
+
+
 # Accept a Korean postposition directly after a filename (``plan.md에``)
 # while returning only the project-relative path.
 _MAX_ANSWER_CHARS = 3500  # stays under Slack's message length limit
+
+
 _PATH_IN_REQUEST = re.compile(
     r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?=$|[\s,.:!?…]|[은는이가을를에의])"
 )
+
+
 # ExecutionWorkflow's plan-building gate intentionally uses narrower test
 # phrasing than RequestRouter's CODE_MARKERS (bare "테스트"/"test"/"코드" are
 # excluded here) — a pre-existing behavior this shared-vocabulary refactor
 # preserves rather than widens.
 _EXECUTION_EXCLUDED_BROAD_MARKERS = ("테스트", "test", "코드")
+
+
 _EXECUTION_ONLY_TEST_MARKERS = ("테스트 실행", "test 실행")
+
+
 _EXECUTION_MARKERS = (
     tuple(marker for marker in CODE_MARKERS if marker not in _EXECUTION_EXCLUDED_BROAD_MARKERS)
     + _EXECUTION_ONLY_TEST_MARKERS
@@ -112,104 +152,6 @@ _EXECUTION_MARKERS = (
     + CODE_INTEGRATION_MARKERS
     + PLAN_CONTINUATION_MARKERS
 )
-_ALLOWED_VERIFICATIONS = ("run_tests", "run_lint", "run_typecheck")
-DEFAULT_MAX_AUTO_REPAIRS = 2
-DEFAULT_MAX_AUTOPILOT_ITEMS = 20
-
-
-class ExecutionRisk(StrEnum):
-    REVERSIBLE = "reversible"
-    MODIFY = "modify"
-    HIGH = "high"
-
-
-@dataclass(frozen=True)
-class InstructionSource:
-    """A project-local instruction file, ordered from root to most specific."""
-
-    relative_path: str
-    content: str
-    precedence: int
-
-
-@dataclass(frozen=True)
-class GitState:
-    is_repository: bool
-    changed_files: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class ProjectContext:
-    project_name: str
-    root: Path
-    instructions: list[InstructionSource]
-    git: GitState
-
-
-class ProjectContextLoader:
-    """Loads only project-contained AGENTS.md files and read-only Git metadata."""
-
-    def __init__(self, project_resolver: ProjectResolver) -> None:
-        self.project_resolver = project_resolver
-
-    def load(
-        self,
-        project_name: str,
-        *,
-        target_paths: list[str] | None = None,
-        root: Path | None = None,
-    ) -> ProjectContext:
-        """`root` swaps in a thread worktree of the same project for the files read."""
-        resolved = self.project_resolver.resolve(project_name).resolve()
-        root = root.resolve() if root is not None else resolved
-        directories = {root}
-        for target_path in target_paths or []:
-            target = _project_path(root, target_path)
-            directories.add(target if target.is_dir() else target.parent)
-
-        instruction_paths: set[Path] = set()
-        for directory in directories:
-            current = directory
-            while True:
-                for filename in ("AGENTS.md", "CLAUDE.md"):
-                    candidate = current / filename
-                    if candidate.exists():
-                        if candidate.is_symlink() or not candidate.is_file():
-                            raise ValueError(f"허용되지 않은 지침 파일 경로입니다: {candidate}")
-                        resolved = candidate.resolve()
-                        if not resolved.is_relative_to(root):
-                            raise ValueError(
-                                f"프로젝트 밖 지침 파일은 사용할 수 없습니다: {candidate}"
-                            )
-                        instruction_paths.add(resolved)
-                if current == root:
-                    break
-                current = current.parent
-
-        instructions = [
-            InstructionSource(
-                relative_path=str(path.relative_to(root)),
-                content=path.read_text(encoding="utf-8"),
-                precedence=index,
-            )
-            for index, path in enumerate(
-                sorted(instruction_paths, key=lambda item: (len(item.parts), str(item)))
-            )
-        ]
-        return ProjectContext(
-            project_name=project_name,
-            root=root,
-            instructions=instructions,
-            git=_read_git_state(root),
-        )
-
-
-@dataclass(frozen=True)
-class AppliedSkill:
-    name: str
-    relative_path: str
-    version: str
-    content: str
 
 
 @dataclass
@@ -232,311 +174,6 @@ def _question_key(question: Question) -> str:
     return f"{question.number}\n{question.text}"
 
 
-class SkillRegistry:
-    """Reads named skills only from explicitly trusted global roots.
-
-    A project can opt in through ``.piplup/allowed-skills.txt``.  The allowlist
-    never grants a project path the ability to supply its own executable skill.
-    """
-
-    def __init__(self, trusted_roots: dict[str, str | Path] | None = None) -> None:
-        self.trusted_roots = {
-            name: Path(path).expanduser().resolve() for name, path in (trusted_roots or {}).items()
-        }
-
-    def select(self, *, intent: str, project_root: Path) -> list[AppliedSkill]:
-        allowed_names = project_allowlist(project_root)
-        desired_names = _skills_for_intent(intent)
-        skills: list[AppliedSkill] = []
-        for name in desired_names:
-            skill = self._global_skill(name, allowed_names) or self._claude_project_skill(
-                name, project_root, allowed_names
-            )
-            if skill is not None:
-                skills.append(skill)
-        return skills
-
-    def _global_skill(self, name: str, allowed_names: set[str]) -> AppliedSkill | None:
-        if name not in allowed_names:
-            return None
-        skill_path = self._find_skill(name)
-        return _load_skill(name, skill_path) if skill_path is not None else None
-
-    @staticmethod
-    def _claude_project_skill(
-        name: str, project_root: Path, allowed_names: set[str]
-    ) -> AppliedSkill | None:
-        if f"claude:{name}" not in allowed_names:
-            return None
-        skill_path = project_root / ".claude" / "skills" / name / "SKILL.md"
-        if not skill_path.is_file() or skill_path.is_symlink():
-            return None
-        resolved = skill_path.resolve()
-        if not resolved.is_relative_to(project_root.resolve()):
-            return None
-        return _load_skill(f"claude:{name}", resolved)
-
-    def _find_skill(self, name: str) -> Path | None:
-        for root in self.trusted_roots.values():
-            candidate = root / name / "SKILL.md"
-            if not candidate.is_file() or candidate.is_symlink():
-                continue
-            resolved = candidate.resolve()
-            if resolved.is_relative_to(root):
-                return resolved
-        return None
-
-
-@dataclass(frozen=True)
-class ExecutionStep:
-    action: Literal["write_file"]
-    path: str
-    content: str
-
-
-@dataclass(frozen=True)
-class ExecutionPlan:
-    goal: str
-    project_name: str
-    affected_files: list[str]
-    steps: list[ExecutionStep]
-    verification_commands: list[str]
-    risk: ExecutionRisk
-    applied_agents: list[str] = field(default_factory=list)
-    applied_skills: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class ExistingFile:
-    """A target file's current content, read before planning so the model
-    edits real code instead of guessing at it. `content` is `None` when the
-    path doesn't exist yet — a plausible new-file request, not a read error.
-    """
-
-    relative_path: str
-    content: str | None
-
-
-class PendingPlanStatus(StrEnum):
-    MISSING = "missing"
-    READY = "ready"
-    EXPIRED = "expired"
-
-
-class VerificationStatus(StrEnum):
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    TIMED_OUT = "timed_out"
-    ENVIRONMENT_ERROR = "environment_error"
-
-
-@dataclass(frozen=True)
-class PendingPlan:
-    plan: ExecutionPlan
-    created_at: datetime
-    fingerprint: str
-
-
-class PendingPlanStore:
-    """Thread-keyed plan storage.  Pending plans are deliberately not persistent."""
-
-    def __init__(self, *, ttl: timedelta = timedelta(minutes=15)) -> None:
-        self.ttl = ttl
-        self._lock = Lock()
-        self._plans: dict[tuple[str, str], PendingPlan] = {}
-
-    def put(
-        self, channel_id: str, thread_ts: str, plan: ExecutionPlan, *, request: str
-    ) -> PendingPlan:
-        fingerprint = _fingerprint(request)
-        key = (channel_id, thread_ts)
-        with self._lock:
-            existing = self._plans.get(key)
-            if (
-                existing is not None
-                and not self._expired(existing)
-                and existing.fingerprint == fingerprint
-            ):
-                return existing
-            pending = PendingPlan(plan=plan, created_at=datetime.now(UTC), fingerprint=fingerprint)
-            self._plans[key] = pending
-            return pending
-
-    def take(self, channel_id: str, thread_ts: str) -> tuple[PendingPlanStatus, PendingPlan | None]:
-        key = (channel_id, thread_ts)
-        with self._lock:
-            pending = self._plans.pop(key, None)
-            if pending is None:
-                return PendingPlanStatus.MISSING, None
-            if self._expired(pending):
-                return PendingPlanStatus.EXPIRED, None
-            return PendingPlanStatus.READY, pending
-
-    def cancel(self, channel_id: str, thread_ts: str) -> PendingPlanStatus:
-        status, _ = self.take(channel_id, thread_ts)
-        return status
-
-    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
-        """Check a non-expired draft without consuming its confirmation."""
-        with self._lock:
-            pending = self._plans.get((channel_id, thread_ts))
-            if pending is None:
-                return False
-            if self._expired(pending):
-                self._plans.pop((channel_id, thread_ts), None)
-                return False
-            return True
-
-    def peek(self, channel_id: str, thread_ts: str) -> ExecutionPlan | None:
-        """Read a non-expired draft's plan without consuming its confirmation
-        — for a clarification message that describes what's pending."""
-        with self._lock:
-            pending = self._plans.get((channel_id, thread_ts))
-            if pending is None:
-                return None
-            if self._expired(pending):
-                self._plans.pop((channel_id, thread_ts), None)
-                return None
-            return pending.plan
-
-    def _expired(self, pending: PendingPlan) -> bool:
-        return datetime.now(UTC) - pending.created_at > self.ttl
-
-
-class AwaitingProjectStore:
-    """Remembers a code-work request that stalled only for lack of a project
-    name, so the very next reply supplying just the name resumes it instead
-    of being judged as a fresh, markerless message. Thread context already
-    carries the original request text — this only needs to remember *that*
-    a request is waiting, TTL-bound like `PendingPlanStore`."""
-
-    def __init__(self, *, ttl: timedelta = timedelta(minutes=15)) -> None:
-        self.ttl = ttl
-        self._lock = Lock()
-        self._marked_at: dict[tuple[str, str], datetime] = {}
-
-    def mark(self, channel_id: str, thread_ts: str) -> None:
-        with self._lock:
-            self._marked_at[(channel_id, thread_ts)] = datetime.now(UTC)
-
-    def clear(self, channel_id: str, thread_ts: str) -> None:
-        with self._lock:
-            self._marked_at.pop((channel_id, thread_ts), None)
-
-    def has_pending(self, channel_id: str, thread_ts: str) -> bool:
-        with self._lock:
-            marked_at = self._marked_at.get((channel_id, thread_ts))
-            if marked_at is None:
-                return False
-            if datetime.now(UTC) - marked_at > self.ttl:
-                self._marked_at.pop((channel_id, thread_ts), None)
-                return False
-            return True
-
-
-@dataclass(frozen=True)
-class CommandResult:
-    name: str
-    success: bool
-    output: str
-    status: VerificationStatus | None = None
-
-    def __post_init__(self) -> None:
-        if self.status is None:
-            object.__setattr__(
-                self,
-                "status",
-                VerificationStatus.SUCCEEDED if self.success else VerificationStatus.FAILED,
-            )
-
-
-@dataclass(frozen=True)
-class ExecutionResult:
-    changed_files: list[str]
-    diffs: list[str]
-    checks: list[CommandResult]
-    remaining_risks: list[str]
-    repair_attempts: int = 0
-    repair_failure_reason: str | None = None
-    workspace_branch: str | None = None
-    workspace_path: str | None = None
-    rollback_warning: str | None = None
-
-
-# The checks run the project's own code, so they get only what a plain run needs: none of
-# the bot's settings or secrets, no color codes in the Slack text, and no bytecode or caches
-# written into the worktree (they would show up as untracked files in the post-run review).
-_VERIFICATION_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR")
-
-
-def _verification_env() -> dict[str, str]:
-    env = {key: os.environ[key] for key in _VERIFICATION_ENV_KEYS if key in os.environ}
-    return {**env, "NO_COLOR": "1", "PYTHONDONTWRITEBYTECODE": "1"}
-
-
-class ProjectExecutionTools:
-    """Restricted filesystem and verification tools used after confirmation only."""
-
-    COMMANDS = {
-        # Use the interpreter running the bot so verification is bound to its
-        # virtual environment and does not depend on a separately installed
-        # ``uv`` binary being present on PATH.
-        "run_tests": (sys.executable, "-m", "pytest", "--color=no", "-p", "no:cacheprovider"),
-        "run_lint": (sys.executable, "-m", "ruff", "check", "src", "tests"),
-        "run_typecheck": (sys.executable, "-m", "mypy"),
-    }
-
-    def __init__(self, root: Path, allowed_paths: list[str]) -> None:
-        self.root = root.resolve()
-        # Freeze the confirmed plan's scope. Callers can neither expand it by
-        # mutating their original list nor accidentally widen it mid-run.
-        self.allowed_paths = frozenset(allowed_paths)
-
-    def read_file(self, relative_path: str) -> str:
-        return _project_path(self.root, relative_path).read_text(encoding="utf-8")
-
-    def write_file(self, relative_path: str, content: str) -> tuple[str, str]:
-        if relative_path not in self.allowed_paths:
-            raise ValueError(f"계획에 포함되지 않은 파일입니다: {relative_path}")
-        if len(content.encode("utf-8")) > MAX_WRITE_BYTES:
-            raise ValueError("파일 내용이 허용 크기를 초과합니다")
-        target = _project_path(self.root, relative_path)
-        before = target.read_text(encoding="utf-8") if target.exists() else ""
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        diff = "".join(
-            difflib.unified_diff(
-                before.splitlines(keepends=True),
-                content.splitlines(keepends=True),
-                fromfile=f"a/{relative_path}",
-                tofile=f"b/{relative_path}",
-            )
-        )
-        return relative_path, diff
-
-    def run_check(self, name: str) -> CommandResult:
-        command = self.COMMANDS.get(name)
-        if command is None:
-            raise ValueError(f"허용되지 않은 검증 명령입니다: {name}")
-        completed = subprocess.run(
-            command,
-            cwd=self.root,
-            env=_verification_env(),
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-        output = (completed.stdout + completed.stderr).strip()
-        success = completed.returncode == 0
-        return CommandResult(
-            name=name,
-            success=success,
-            output=output[-2000:],
-            status=VerificationStatus.SUCCEEDED if success else VerificationStatus.FAILED,
-        )
-
-
 def _with_thread_ids(
     func: Callable[..., Any], channel_id: str, thread_ts: str
 ) -> Callable[..., Any]:
@@ -544,62 +181,6 @@ def _with_thread_ids(
     if "channel_id" not in inspect.signature(func).parameters:
         return func
     return partial(func, channel_id=channel_id, thread_ts=thread_ts)
-
-
-def _create_plan_with_format_retry(
-    creator: Callable[..., ExecutionPlan],
-    request: str,
-    context: ProjectContext,
-    skills: list[AppliedSkill],
-    existing_files: list[ExistingFile],
-) -> ExecutionPlan:
-    try:
-        return creator(request, context, skills, existing_files)
-    except PlanResponseFormatError:
-        logger.warning("execution_plan_format_retry project=%s attempt=1", context.project_name)
-        retry_request = (
-            f"{request}\n\n형식 교정: 직전 응답은 실행 계획 JSON으로 파싱되지 않았습니다. "
-            "설명이나 Markdown 코드 블록 없이 goal, project_name, affected_files, "
-            "steps, verification_commands, risk 필드를 가진 JSON 객체 하나만 반환하세요. "
-            "plan.md 본문은 steps[].content 문자열에 넣으세요."
-        )
-        return creator(retry_request, context, skills, existing_files)
-
-
-def _linear_planning_sources(root: Path) -> list[str]:
-    """Select a small read-only sample of existing Linear implementation and tests."""
-    paths: list[str] = []
-    total_bytes = 0
-    for folder_name in ("src", "tests"):
-        folder = root / folder_name
-        if not folder.is_dir():
-            continue
-        for path in sorted(folder.glob("**/*linear*.py")):
-            if path.is_symlink() or not path.is_file():
-                continue
-            size = path.stat().st_size
-            if size > 16_000 or total_bytes + size > 48_000:
-                continue
-            paths.append(str(path.relative_to(root)))
-            total_bytes += size
-            if len(paths) == 4:
-                return paths
-    return paths
-
-
-def _read_existing_files(root: Path, target_paths: list[str]) -> list[ExistingFile]:
-    """Read each candidate target path with the same bounded validation as the
-    execution tools; a missing or invalid path becomes `content=None` rather
-    than raising, since the request may be to create that file."""
-    tools = ProjectExecutionTools(root, [])
-    files: list[ExistingFile] = []
-    for path in target_paths:
-        try:
-            content: str | None = tools.read_file(path)
-        except (OSError, ValueError):
-            content = None
-        files.append(ExistingFile(relative_path=path, content=content))
-    return files
 
 
 def _edit_named_paths(command_text: str) -> list[str]:
@@ -1788,41 +1369,6 @@ class ExecutionWorkflow:
             )
 
 
-def _preview_diffs(root: Path, steps: list[ExecutionStep]) -> list[tuple[str, str]]:
-    """Compute a read-only unified diff per step against the file currently on
-    disk — nothing is written. A missing/invalid path is treated as empty
-    "before" content, matching a new-file step."""
-    diffs: list[tuple[str, str]] = []
-    for step in steps:
-        before = ""
-        try:
-            target = _project_path(root, step.path)
-            if target.exists():
-                before = target.read_text(encoding="utf-8")
-        except (OSError, ValueError):
-            before = ""
-        diff = "".join(
-            difflib.unified_diff(
-                before.splitlines(keepends=True),
-                step.content.splitlines(keepends=True),
-                fromfile=f"a/{step.path}",
-                tofile=f"b/{step.path}",
-            )
-        )
-        diffs.append((step.path, diff))
-    return diffs
-
-
-def _render_diff_excerpt(diff: str, *, max_lines: int = 12) -> str:
-    lines = diff.splitlines()
-    if not lines:
-        return "(변경 없음)"
-    excerpt = "\n".join(lines[:max_lines])
-    if len(lines) > max_lines:
-        excerpt += f"\n... ({len(lines) - max_lines}줄 생략)"
-    return excerpt
-
-
 @dataclass(frozen=True)
 class _PlanFirstLimits:
     write_roots: tuple[str, ...] | None = None
@@ -1865,183 +1411,11 @@ def _edit_applied_guidance(worktree: Path) -> tuple[list[str], list[str]]:
     return agents, skills
 
 
-def render_plan_preview(
-    plan: ExecutionPlan,
-    git: GitState,
-    diffs: list[tuple[str, str]] | None = None,
-    *,
-    max_auto_repairs: int = DEFAULT_MAX_AUTO_REPAIRS,
-    evidence_paths: Sequence[str] = (),
-) -> str:
-    instructions = ", ".join(f"`{item}`" for item in plan.applied_agents) or "없음"
-    skills = ", ".join(f"`{item}`" for item in plan.applied_skills) or "없음"
-    files = "\n".join(f"- `{path}`" for path in plan.affected_files) or "- 파일 변경 없음"
-    steps = "\n".join(f"- `{step.path}` 작성" for step in plan.steps) or "- 파일 변경 없음"
-    checks = ", ".join(plan.verification_commands) or "없음"
-    evidence = ", ".join(f"`{path}`" for path in evidence_paths) or "없음"
-    risk = (
-        "검증은 승인 후에만 실행되며, 환경 의존 오류가 발생할 수 있습니다."
-        if plan.verification_commands
-        else "자동 검증 없이 적용됩니다. 적용 후 직접 확인해 주세요."
-    )
-    git_summary = (
-        "Git 저장소 아님" if not git.is_repository else f"기존 변경 {len(git.changed_files)}개"
-    )
-    diff_sections = (
-        "\n\n".join(
-            f"`{path}`:\n```\n{_render_diff_excerpt(diff)}\n```" for path, diff in diffs
-        )
-        if diffs
-        else "(변경 없음)"
-    )
-    return (
-        f"{render_code_work_status(CodeWorkState.AWAITING_CONFIRMATION)}\n"
-        "코드 실행 계획을 만들었습니다.\n"
-        f"목표: {plan.goal}\n프로젝트: `{plan.project_name}` ({git_summary})\n"
-        f"위험도: `{plan.risk}`\n승인 파일 범위:\n{files}\n실행 단계:\n{steps}\n"
-        f"변경 미리보기:\n{diff_sections}\n"
-        f"조사 근거: {evidence}\n고정 검증 명령: {checks}\n"
-        f"자동 복구 예산: 최대 {max_auto_repairs}회\n"
-        "미지원 작업: 임의 셸·HTTP·패키지 설치/삭제·rename·Git commit/push\n"
-        f"남은 위험: {risk}\n"
-        f"적용 AGENTS.md: {instructions}\n적용 Skill: {skills}\n\n"
-        "내용을 확인한 뒤 같은 스레드에 `실행`이라고 보내면 적용합니다. "
-        "`취소`하면 계획만 제거합니다."
-    )
-
-
-def _outcome_line(result: ExecutionResult) -> str:
-    if result.repair_failure_reason:
-        return f"❌ 구현 실패: {result.repair_failure_reason}"
-    if not result.checks:
-        return "✅ 구현 완료 (자동 검증 없음)"
-    if not all(check.success for check in result.checks):
-        return "⚠️ 변경 적용, 검증 실패"
-    if result.repair_attempts:
-        return f"✅ 구현 완료 (자동 복구 {result.repair_attempts}회)"
-    return render_code_work_status(CodeWorkState.SUCCEEDED)
-
-
-def render_execution_result(plan: ExecutionPlan, result: ExecutionResult) -> str:
-    changes = "\n".join(f"- `{path}`" for path in result.changed_files) or "- 파일 변경 없음"
-    checks = "\n".join(_render_check(check) for check in result.checks) or "- 실행한 검증 명령 없음"
-    risks = "\n".join(f"- {risk}" for risk in result.remaining_risks) or "- 없음"
-    instructions = ", ".join(f"`{item}`" for item in plan.applied_agents) or "없음"
-    skills = ", ".join(f"`{item}`" for item in plan.applied_skills) or "없음"
-    outcome = _outcome_line(result)
-    workspace = ""
-    if result.workspace_branch is not None:
-        workspace = (
-            f"작업 브랜치: `{result.workspace_branch}`\n작업 경로: `{result.workspace_path}`\n"
-            "원본 체크아웃은 변경하지 않았습니다. 결과를 버리려면 `폐기`라고 보내세요.\n"
-        )
-    elif result.rollback_warning is not None:
-        workspace = f"⚠️ {result.rollback_warning}\n"
-    return (
-        f"{outcome}\n{workspace}변경 파일:\n{changes}\nDiff 요약: {_diff_summary(result.diffs)}\n"
-        f"검증 결과:\n{checks}\n"
-        f"적용 AGENTS.md: {instructions}\n적용 Skill: {skills}\n남은 위험:\n{risks}"
-    )
-
-
-def render_execution_failure(
-    plan: ExecutionPlan, reason: str, changed_files: list[str] | None = None
-) -> str:
-    applied = "\n".join(f"- `{path}`" for path in changed_files or []) or "- 없음"
-    return (
-        "❌ 실행 실패\n"
-        f"프로젝트: `{plan.project_name}`\n원인: {reason}\n"
-        f"이미 적용된 파일:\n{applied}\n"
-        "남은 단계는 진행하지 않았습니다. 위 파일들의 Git diff를 확인한 뒤 새 계획을 만들어 주세요."
-    )
-
-
-def render_code_work_status(state: CodeWorkState, *, repair_attempt: int | None = None) -> str:
-    """Return the fixed, content-safe Slack text for a code-work lifecycle state.
-
-    State reporting is deliberately independent from model output: it exposes
-    progress without leaking prompts, file bodies, or agent reasoning.
-    """
-    messages = {
-        CodeWorkState.DISCOVERING: "🔎 코드 구조를 확인 중입니다…",
-        CodeWorkState.AWAITING_CONFIRMATION: "📝 구현 계획을 만들었습니다. 실행 확인을 기다립니다.",
-        CodeWorkState.IMPLEMENTING: "🛠️ 코드 변경을 적용했습니다. 검증 중입니다…",
-        CodeWorkState.VERIFYING: "🛠️ 코드 변경을 적용했습니다. 검증 중입니다…",
-        CodeWorkState.SUCCEEDED: "✅ 구현 및 검증 완료",
-        CodeWorkState.FAILED: "❌ 구현 실패",
-        CodeWorkState.CANCELLED: "🚫 구현 계획을 취소했습니다.",
-    }
-    if state is CodeWorkState.REPAIRING:
-        attempt = repair_attempt if repair_attempt is not None else 1
-        return f"🔁 테스트 실패를 분석해 수정 중입니다… ({attempt}/2)"
-    return messages.get(state, "코드 작업을 기다리고 있습니다.")
-
-
-def _project_path(root: Path, relative_path: str, *, allow_root: bool = False) -> Path:
-    path = Path(relative_path)
-    is_root = str(path) in {"", "."}
-    if (is_root and not allow_root) or path.is_absolute() or ".." in path.parts:
-        raise ValueError(f"허용되지 않은 경로입니다: {relative_path}")
-    target = (root / path).resolve()
-    if not target.is_relative_to(root.resolve()):
-        raise ValueError(f"허용되지 않은 경로입니다: {relative_path}")
-    return target
-
-
-def _read_git_state(root: Path) -> GitState:
-    try:
-        inside = subprocess.run(
-            ("git", "-C", str(root), "rev-parse", "--is-inside-work-tree"),
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return GitState(is_repository=False)
-    if inside.returncode != 0 or inside.stdout.strip() != "true":
-        return GitState(is_repository=False)
-    status = subprocess.run(
-        ("git", "-C", str(root), "status", "--porcelain"),
-        capture_output=True,
-        text=True,
-        timeout=3,
-        check=False,
-    )
-    return GitState(
-        is_repository=True,
-        changed_files=[line[3:] for line in status.stdout.splitlines() if len(line) > 3],
-    )
-
-
-def _load_skill(name: str, skill_path: Path) -> AppliedSkill:
-    """Read one allowlisted skill after its location has passed boundary checks."""
-    content = skill_path.read_text(encoding="utf-8")
-    return AppliedSkill(
-        name=name,
-        relative_path=str(skill_path),
-        version=hashlib.sha256(content.encode("utf-8")).hexdigest()[:12],
-        content=content,
-    )
-
-
-def _skills_for_intent(intent: str) -> tuple[str, ...]:
-    normalized = intent.casefold()
-    if any(word in normalized for word in ("리뷰", "review")):
-        return ("code-review",)
-    if any(word in normalized for word in ("스프레드시트", "xlsx", "csv")):
-        return ("spreadsheets",)
-    if any(word in normalized for word in ("문서", "readme", "markdown", ".md")):
-        return ("documents",)
-    return ()
-
-
 def _is_execution_request(text: str) -> bool:
     normalized = text.casefold()
     return is_plan_follow_work_request(normalized) or any(
         marker in normalized for marker in _EXECUTION_MARKERS
     )
-
 
 
 # Korean postpositions that mean "based on / according to / following" plan.md
@@ -2065,194 +1439,3 @@ def _is_plan_follow_request(text: str) -> bool:
 
 def _is_autopilot_request(text: str) -> bool:
     return "끝까지 진행" in text
-
-
-_UNCHECKED_ITEM = re.compile(r"^\s*- \[ \] (.+)$", re.MULTILINE)
-
-
-def next_unchecked_item(plan_text: str) -> str | None:
-    match = _UNCHECKED_ITEM.search(plan_text)
-    return match.group(1) if match else None
-
-
-def _validate_plan(
-    plan: ExecutionPlan,
-    project_name: str,
-    user_named_paths: Sequence[str],
-    *,
-    project_root: Path | None = None,
-    evidence_paths: Sequence[str] = (),
-    require_code_evidence: bool = False,
-    restrict_new_files_to_code_roots: bool = False,
-) -> None:
-    if plan.project_name != project_name:
-        raise ValueError("계획의 프로젝트가 요청 대상과 다릅니다")
-    named = set(user_named_paths)
-    for path in plan.affected_files:
-        if is_protected_meta_path(path) and path not in named:
-            raise ValueError(
-                f"`{path}`는 프로젝트 관리 파일이라 사용자가 직접 지정한 경우에만 "
-                "수정할 수 있습니다"
-            )
-    for path in plan.affected_files:
-        if is_secret_path(path):
-            raise ValueError(f"`{path}`는 비밀값 파일이라 수정할 수 없습니다")
-        if is_risky_path(path) and path not in named:
-            raise ValueError(
-                f"`{path}`는 검증이나 CI에서 코드로 실행될 수 있어 사용자가 직접 지정한 "
-                "경우에만 수정할 수 있습니다"
-            )
-    if plan.risk is ExecutionRisk.HIGH:
-        raise ValueError("고위험 작업(의존성·네트워크·삭제·Git push)은 지원하지 않습니다")
-    if len(plan.steps) > 20 or len(plan.affected_files) > 20:
-        raise ValueError("한 계획에서 변경할 수 있는 파일 수를 초과했습니다")
-    step_paths = {step.path for step in plan.steps}
-    if set(plan.affected_files) != step_paths:
-        mismatched = sorted(set(plan.affected_files) ^ step_paths)
-        listed = ", ".join(f"`{path}`" for path in mismatched)
-        raise ValueError(
-            "승인 파일 범위 밖 수정이 포함되어 새 계획과 실행 확인이 필요합니다 "
-            f"(불일치 파일: {listed})"
-        )
-    for path in plan.affected_files:
-        _project_path(Path("/safe-root"), path)
-        if (
-            restrict_new_files_to_code_roots
-            and project_root is not None
-            and not _project_path(project_root, path).exists()
-            and not _is_source_or_test_path(path)
-        ):
-            raise ValueError(
-                f"새 파일 `{path}`은 `src/` 또는 `tests/` 아래에 만들어야 합니다"
-            )
-    if require_code_evidence and not any(_is_source_or_test_path(path) for path in evidence_paths):
-        raise ValueError(
-            "plan.md 실행에는 기존 `src/` 또는 `tests/` 파일을 읽은 구현 근거가 필요합니다"
-        )
-    if any(step.action != "write_file" for step in plan.steps):
-        raise ValueError("허용되지 않은 실행 단계가 포함되었습니다")
-    if project_root is not None:
-        writes = [(step.path, step.content) for step in plan.steps]
-        reject_oversized_total(writes, PLAN_MAX_TOTAL_BYTES)
-        reject_blanking(project_root, writes)
-        reject_mass_deletion(project_root, writes, named)
-    if any(command not in _ALLOWED_VERIFICATIONS for command in plan.verification_commands):
-        raise ValueError("허용되지 않은 검증 명령이 포함되었습니다")
-    if len(set(plan.verification_commands)) != len(plan.verification_commands):
-        raise ValueError("검증 명령이 중복되었습니다")
-
-
-def _is_source_or_test_path(path: str) -> bool:
-    directories = path.replace("\\", "/").split("/")[:-1]
-    return "src" in directories or directories[:1] == ["tests"]
-
-
-def _validate_repair_steps(steps: object, approved_paths: Sequence[str]) -> None:
-    if not isinstance(steps, list) or not steps:
-        raise ValueError("자동 복구 단계가 비어 있습니다")
-    approved = set(approved_paths)
-    for step in steps:
-        if not isinstance(step, ExecutionStep) or step.action != "write_file":
-            raise ValueError("허용되지 않은 자동 복구 단계입니다")
-        if step.path not in approved:
-            raise ValueError("자동 복구에 승인 파일 범위 밖 수정이 필요합니다")
-        if is_protected_meta_path(step.path):
-            raise ValueError("보호 파일은 자동 복구할 수 없어 새 계획과 확인이 필요합니다")
-        if is_risky_path(step.path) or is_secret_path(step.path):
-            raise ValueError("코드로 실행되거나 비밀값을 담은 파일은 자동 복구할 수 없습니다")
-    reject_oversized_total([(step.path, step.content) for step in steps], REPAIR_MAX_TOTAL_BYTES)
-
-
-def _fingerprint(request: str) -> str:
-    return hashlib.sha256(request.strip().casefold().encode("utf-8")).hexdigest()
-
-
-def _repair_fingerprint(steps: Sequence[ExecutionStep]) -> str:
-    payload = [(step.path, step.content) for step in steps]
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
-
-
-def _verification_fingerprint(checks: Sequence[CommandResult]) -> str:
-    payload = [(check.name, check.status, check.output) for check in checks if not check.success]
-    return hashlib.sha256(repr(payload).encode()).hexdigest()
-
-
-def _remaining_risks(checks: list[CommandResult]) -> list[str]:
-    if not checks:
-        return ["자동 검증 없이 적용됐습니다. 변경 내용을 직접 확인해 주세요."]
-    if any(check.status is VerificationStatus.ENVIRONMENT_ERROR for check in checks):
-        return ["검증 실행 환경 오류를 해결한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
-    if any(check.status is VerificationStatus.TIMED_OUT for check in checks):
-        return ["검증 시간 초과 원인을 확인한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
-    if any(not check.success for check in checks):
-        return ["실패한 검증을 수정한 뒤 새 계획을 만들어 다시 실행해야 합니다."]
-    return []
-
-
-def _render_check(check: CommandResult) -> str:
-    if check.success:
-        return f"- ✅ {check.name}"
-    detail = _redact_output(check.output).replace("\n", " ")[:300] or "출력 없음"
-    label = {
-        VerificationStatus.ENVIRONMENT_ERROR: "실행 환경 오류",
-        VerificationStatus.TIMED_OUT: "시간 초과",
-    }.get(check.status or VerificationStatus.FAILED)
-    prefix = f"- ❌ {check.name} ({label})" if label else f"- ❌ {check.name}"
-    return f"{prefix}: {detail}"
-
-
-def _diff_summary(diffs: list[str]) -> str:
-    added = sum(
-        1
-        for diff in diffs
-        for line in diff.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
-    )
-    removed = sum(
-        1
-        for diff in diffs
-        for line in diff.splitlines()
-        if line.startswith("-") and not line.startswith("---")
-    )
-    return f"+{added}/-{removed}줄"
-
-
-def _redact_output(output: str) -> str:
-    return re.sub(
-        r"(?i)\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|API_KEY|PASSWORD))=\S+",
-        r"\1=[REDACTED]",
-        output,
-    )
-
-
-def parse_execution_plan(content: object) -> ExecutionPlan:
-    """Parse the LLM's strict JSON plan without accepting arbitrary commands."""
-    text = content_text(content).strip()
-    fenced = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
-    if fenced:
-        text = fenced.group(1)
-    try:
-        payload = json.loads(text.replace("\u00a0", " "))
-        risk = ExecutionRisk(payload["risk"])
-        raw_steps = payload["steps"]
-        steps = [
-            ExecutionStep(action=step["action"], path=step["path"], content=step["content"])
-            for step in raw_steps
-        ]
-        plan = ExecutionPlan(
-            goal=payload["goal"],
-            project_name=payload["project_name"],
-            affected_files=payload["affected_files"],
-            steps=steps,
-            verification_commands=payload.get("verification_commands", []),
-            risk=risk,
-        )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError("모델 응답이 유효한 실행 계획 형식이 아닙니다") from exc
-    if not isinstance(plan.goal, str) or not isinstance(plan.project_name, str):
-        raise ValueError("실행 계획의 목표 또는 프로젝트가 올바르지 않습니다")
-    if not all(isinstance(path, str) for path in plan.affected_files):
-        raise ValueError("실행 계획의 파일 경로가 올바르지 않습니다")
-    if not all(isinstance(command, str) for command in plan.verification_commands):
-        raise ValueError("실행 계획의 검증 명령이 올바르지 않습니다")
-    return plan

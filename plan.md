@@ -491,7 +491,7 @@ plan-first로 에이전트가 쓴 `docs/linear/plan.md`(2026-10-07)에서 규칙
 - [x] 테스트를 `tests/<패키지>/`로 같은 구조로 옮긴다
 
 ### B. PEV 분해 (구조 전용, 동작 불변)
-- [ ] `execution_workflow.py`의 계획 타입·검증·렌더링을 `code/plan.py`, 도구 경계(`ProjectExecutionTools` 등)를 `code/tooluse.py`, 검증 결과 타입을 `code/verifier.py`로 옮긴다. `ExecutionWorkflow` 본체는 `code/workflow.py`에 남는다
+- [x] `execution_workflow.py`의 계획 타입·검증·렌더링을 `code/plan.py`, 도구 경계(`ProjectExecutionTools` 등)를 `code/tooluse.py`, 검증 결과 타입을 `code/verifier.py`로 옮긴다. `ExecutionWorkflow` 본체는 `code/workflow.py`에 남는다
 - [ ] `linear/`의 쓰기 게이트(`LinearActionDraft`, `PendingLinearActionStore`, `_run_action`)를 `linear/executor.py`로 분리한다. `linear/verifier.py`와 `notion/`은 자리만 둔다(내용 없음, 모듈 docstring으로 역할 기록)
 
 ### C. 문서
