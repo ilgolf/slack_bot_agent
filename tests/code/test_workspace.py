@@ -323,3 +323,41 @@ def test_a_bot_branch_may_be_pushed_to_origin_in_exactly_one_form() -> None:
             "bot/C1-1.0",
         ]
     ]
+
+
+def test_commit_count_and_subjects_are_read_against_a_safe_base_in_fixed_forms() -> None:
+    runner = RecordingRunner()
+    git = GitCommands(runner)
+
+    git(Path("/repo"), "rev-list", "--count", "main..HEAD")
+    git(Path("/repo"), "log", "--reverse", "--format=%s", "main..HEAD")
+
+    assert [call[5:] for call in runner.calls] == [
+        ["rev-list", "--count", "main..HEAD"],
+        ["log", "--reverse", "--format=%s", "main..HEAD"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("rev-list", "--all"),
+        ("rev-list", "--count", "--all"),
+        ("rev-list", "--count", "-x..HEAD"),
+        ("rev-list", "--count", "main..HEAD", "extra"),
+        ("rev-list", "--count", "main...HEAD"),
+        ("rev-list", "--count", "ma in..HEAD"),
+        ("log", "-p", "main..HEAD"),
+        ("log", "--format=%s", "main..HEAD"),
+        ("log", "--reverse", "--format=%s", "--output=/tmp/x", "main..HEAD"),
+        ("log", "--reverse", "--format=%s", "-x..HEAD"),
+        ("log", "--reverse", "--format=%s", "main"),
+    ],
+)
+def test_other_rev_list_and_log_forms_are_rejected(args: tuple[str, ...]) -> None:
+    runner = RecordingRunner()
+
+    with pytest.raises(ValueError):
+        GitCommands(runner)(Path("/repo"), *args)
+
+    assert runner.calls == []

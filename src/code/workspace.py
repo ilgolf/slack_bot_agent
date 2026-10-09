@@ -25,6 +25,8 @@ _ALLOWED_SUBCOMMANDS = {
     "diff",
     "show",
     "push",
+    "rev-list",
+    "log",
 }
 _ALLOWED_WORKTREE_ACTIONS = {"add", "remove", "list", "prune"}
 BOT_BRANCH_PREFIX = "bot/"
@@ -79,6 +81,10 @@ def _check_allowed(args: Sequence[str]) -> None:
         raise ValueError("허용되지 않은 git worktree 동작입니다")
     if subcommand == "show" and not (len(args) == 2 and args[1].startswith("HEAD:")):
         raise ValueError("HEAD의 파일 내용만 읽을 수 있습니다")
+    if subcommand == "rev-list" and not _is_commit_count(args):
+        raise ValueError("허용되지 않은 rev-list 형태입니다")
+    if subcommand == "log" and not _is_subject_log(args):
+        raise ValueError("허용되지 않은 log 형태입니다")
     if subcommand == "push" and not (
         len(args) == 3 and args[1] == "origin" and _PUSHABLE_BRANCH.fullmatch(args[2])
     ):
@@ -241,3 +247,21 @@ class ThreadWorkspaces:
 def _commit_subject(goal: str) -> str:
     first_line = " ".join(goal.splitlines()[0].split()) if goal.strip() else "코드 작업"
     return (_SUBJECT_PREFIX + first_line)[:_SUBJECT_MAX]
+
+
+def _is_base_range(value: str) -> bool:
+    base, separator, head = value.partition("..")
+    return separator == ".." and head == "HEAD" and is_safe_ref(base)
+
+
+def _is_commit_count(args: Sequence[str]) -> bool:
+    return len(args) == 3 and args[1] == "--count" and _is_base_range(args[2])
+
+
+def _is_subject_log(args: Sequence[str]) -> bool:
+    return (
+        len(args) == 4
+        and args[1] == "--reverse"
+        and args[2] == "--format=%s"
+        and _is_base_range(args[3])
+    )
