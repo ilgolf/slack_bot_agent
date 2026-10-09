@@ -13,6 +13,7 @@ from src.core.plan_first import PlanAnswer, parse_answer
 class RequestIntent(StrEnum):
     CONTROL_CONFIRM = "control_confirm"
     CONTROL_CANCEL = "control_cancel"
+    PULL_REQUEST = "pull_request"
     PLAN_CONFIRM = "plan_confirm"
     PLAN_ANSWER = "plan_answer"
     CODE_WORK = "code_work"
@@ -38,6 +39,7 @@ _MENTION = re.compile(r"<@[^>]+>")
 _CONFIRM = re.compile(r"^(실행|실행해줘|실행합니다)$")
 _CANCEL = re.compile(r"^(취소|취소해줘|취소합니다)$")
 _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
+_PULL_REQUEST = re.compile(r"PR(?:\s*제목\s*[:：]\s*\S[^\n]*)?")
 _PLAN_CONFIRM = re.compile(
     r"^기획\s*확정\s+(linear|code|notion)(?:\s*(?:해줘|합니다))?$", re.IGNORECASE
 )
@@ -92,6 +94,8 @@ class RequestRouter:
             return RoutedRequest(RequestIntent.CONTROL_CANCEL, command, project_name, "취소")
         if _DISCARD.fullmatch(command):
             return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
+        if _PULL_REQUEST.fullmatch(command):
+            return RoutedRequest(RequestIntent.PULL_REQUEST, command, project_name)
         plan_answer = parse_answer(command)
         if plan_answer is not None:
             return RoutedRequest(

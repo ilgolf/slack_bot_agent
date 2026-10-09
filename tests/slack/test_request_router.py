@@ -19,6 +19,9 @@ from src.slack.request_router import RequestIntent, RequestRouter
         ("취소", RequestIntent.CONTROL_CANCEL),
         ("폐기", RequestIntent.CODE_WORK),
         ("<@U123> 폐기해줘", RequestIntent.CODE_WORK),
+        ("PR", RequestIntent.PULL_REQUEST),
+        ("<@U1> PR", RequestIntent.PULL_REQUEST),
+        ("PR 제목: 로그인 오류 수정", RequestIntent.PULL_REQUEST),
         ("<@U123> 이 스레드 요약해줘", RequestIntent.THREAD_SUMMARY),
         ("thread summary", RequestIntent.THREAD_SUMMARY),
         ("스레드 요약해서 md 파일로 만들어", RequestIntent.THREAD_SUMMARY),
@@ -135,3 +138,10 @@ def test_other_wording_is_not_a_plan_review_answer() -> None:
     assert RequestRouter(code_work_mode="analysis").route("추천대로 하자").intent is not (
         RequestIntent.PLAN_ANSWER
     )
+
+
+@pytest.mark.parametrize("text", ["PR 올려줘", "pr", "PR 제목:", "이 PR 설명해줘"])
+def test_only_the_exact_pr_command_is_a_pull_request(text: str) -> None:
+    routed = RequestRouter(code_work_mode="plan").route(text)
+
+    assert routed.intent is RequestIntent.CODE_WORK
