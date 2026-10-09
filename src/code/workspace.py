@@ -1,7 +1,8 @@
 """Per-thread git worktrees for code work (plan.md Phase 17).
 
 Every git call goes through `GitCommands`: a fixed subcommand allowlist, hooks
-disabled, no shell. The bot never pushes, merges, resets or checks out.
+disabled, no shell. The bot never merges, resets or checks out, and pushes only a `bot/`
+branch to `origin` in one fixed form (docs/code/plan.md Q1).
 """
 
 from __future__ import annotations
@@ -23,9 +24,11 @@ _ALLOWED_SUBCOMMANDS = {
     "commit",
     "diff",
     "show",
+    "push",
 }
 _ALLOWED_WORKTREE_ACTIONS = {"add", "remove", "list", "prune"}
 BOT_BRANCH_PREFIX = "bot/"
+_PUSHABLE_BRANCH = re.compile(r"bot/[A-Za-z0-9._-]+")
 _HOOKS_OFF = ("-c", "core.hooksPath=/dev/null")
 _BOT_IDENTITY = {
     "GIT_AUTHOR_NAME": "Slack Bot Agent",
@@ -68,6 +71,10 @@ def _check_allowed(args: Sequence[str]) -> None:
         raise ValueError("허용되지 않은 git worktree 동작입니다")
     if subcommand == "show" and not (len(args) == 2 and args[1].startswith("HEAD:")):
         raise ValueError("HEAD의 파일 내용만 읽을 수 있습니다")
+    if subcommand == "push" and not (
+        len(args) == 3 and args[1] == "origin" and _PUSHABLE_BRANCH.fullmatch(args[2])
+    ):
+        raise ValueError("origin으로 bot/ 브랜치만 푸시할 수 있습니다")
     if subcommand == "branch" and not (
         len(args) == 3 and args[1] == "-D" and args[2].startswith(BOT_BRANCH_PREFIX)
     ):

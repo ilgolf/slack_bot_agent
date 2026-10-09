@@ -23,6 +23,19 @@ class RecordingRunner:
     "args",
     [
         ("push", "origin", "main"),
+        ("push", "--force", "origin", "bot/a"),
+        ("push", "-f", "origin", "bot/a"),
+        ("push", "--force-with-lease", "origin", "bot/a"),
+        ("push", "--delete", "origin", "bot/a"),
+        ("push", "origin", "+bot/a"),
+        ("push", "origin", "bot/a:main"),
+        ("push", "origin", ":bot/a"),
+        ("push", "origin", "bot/a", "main"),
+        ("push", "upstream", "bot/a"),
+        ("push", "origin", "feature/a"),
+        ("push", "origin", "bot/"),
+        ("push", "origin", "bot/a b"),
+        ("push",),
         ("merge", "main"),
         ("reset", "--hard"),
         ("checkout", "main"),
@@ -291,3 +304,22 @@ def test_thread_worktree_finds_a_threads_worktree_without_knowing_its_project(
     assert workspaces.thread_worktree("C1", "1.1") == created
     assert workspaces.thread_worktree("C1", "9.9") is None
     assert ThreadWorkspaces(repo.parent / "missing").thread_worktree("C1", "1.1") is None
+
+
+def test_a_bot_branch_may_be_pushed_to_origin_in_exactly_one_form() -> None:
+    runner = RecordingRunner()
+
+    GitCommands(runner)(Path("/repo"), "push", "origin", "bot/C1-1.0")
+
+    assert runner.calls == [
+        [
+            "git",
+            "-C",
+            "/repo",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "push",
+            "origin",
+            "bot/C1-1.0",
+        ]
+    ]
