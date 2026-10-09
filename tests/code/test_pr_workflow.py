@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import timedelta
 from pathlib import Path
+
+import pytest
 
 from src.code.github import GhCli, GhResult
 from src.code.pr_workflow import PullRequestFacts, PullRequestWorkflow
@@ -24,13 +27,22 @@ class Calls:
     def __init__(self, gh_url: str = "https://github.com/acme/repo/pull/7") -> None:
         self.log: list[str] = []
         self._gh_url = gh_url
+        self.git_error: Exception | None = None
+        self.gh_result: GhResult | None = None
+        self.gh_timeout = False
 
     def git_runner(self, argv: list[str]) -> str:
         self.log.append("git " + " ".join(argv[5:]))
+        if self.git_error is not None:
+            raise self.git_error
         return ""
 
     def gh_runner(self, argv: list[str], cwd: Path) -> GhResult:
         self.log.append("gh " + " ".join(argv[1:3]))
+        if self.gh_timeout:
+            raise TimeoutError
+        if self.gh_result is not None:
+            return self.gh_result
         return GhResult(0, self._gh_url + "\n", "")
 
 
@@ -156,3 +168,69 @@ def test_cancelling_drops_the_draft_without_touching_git_or_github() -> None:
     assert nothing is None
     assert calls.log == []
     assert not workflow.has_pending("C1", "1.0")
+
+
+def test_a_failed_push_opens_no_pull_request_and_is_not_retried() -> None:
+    calls = Calls()
+    calls.git_error = RuntimeError("git 명령이 실패했습니다.")
+    workflow = _workflow(calls)
+    workflow.preview("C1", "1.0", "PR", requester="U42")
+
+    reply = workflow.confirm("C1", "1.0", user_id="U42")
+
+    assert reply is not None
+    assert "푸시에 실패" in reply
+    assert "자동 재시도하지 않았습니다" in reply
+    assert calls.log == ["git push origin bot/C1-1.0"]
+    assert not workflow.has_pending("C1", "1.0")
+
+
+@pytest.mark.parametrize(
+    ("gh_result", "expected"),
+    [
+        (GhResult(1, "", "To get started, please run:  gh auth login"), "gh auth login"),
+        (GhResult(1, "", "already exists:\nhttps://github.com/acme/repo/pull/3"), "pull/3"),
+        (GhResult(1, "", "something else broke"), "PR을 만들지 못했습니다"),
+    ],
+)
+def test_a_failed_pull_request_after_a_good_push_says_the_push_is_done(
+    gh_result: GhResult, expected: str
+) -> None:
+    calls = Calls()
+    calls.gh_result = gh_result
+    workflow = _workflow(calls)
+    workflow.preview("C1", "1.0", "PR", requester="U42")
+
+    reply = workflow.confirm("C1", "1.0", user_id="U42")
+
+    assert reply is not None
+    assert "푸시는 완료" in reply
+    assert expected in reply
+    assert calls.log == ["git push origin bot/C1-1.0", "gh pr create"]
+    assert not workflow.has_pending("C1", "1.0")
+
+
+def test_a_gh_timeout_asks_the_user_to_check_github_instead_of_retrying() -> None:
+    calls = Calls()
+    calls.gh_timeout = True
+    workflow = _workflow(calls)
+    workflow.preview("C1", "1.0", "PR", requester="U42")
+
+    reply = workflow.confirm("C1", "1.0", user_id="U42")
+
+    assert reply is not None
+    assert "GitHub에서 확인" in reply
+    assert calls.log.count("gh pr create") == 1
+
+
+def test_a_push_timeout_is_reported_as_a_failed_push() -> None:
+    calls = Calls()
+    calls.git_error = subprocess.TimeoutExpired("git", 30)
+    workflow = _workflow(calls)
+    workflow.preview("C1", "1.0", "PR", requester="U42")
+
+    reply = workflow.confirm("C1", "1.0", user_id="U42")
+
+    assert reply is not None
+    assert "푸시에 실패" in reply
+    assert calls.log == ["git push origin bot/C1-1.0"]

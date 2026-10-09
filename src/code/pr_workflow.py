@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 
-from src.code.github import GhCli
+from src.code.github import GhCli, PullRequestError
 from src.code.pull_request import PullRequestDraft, build_pull_request
 from src.code.workspace import GitCommands
 
@@ -90,10 +91,23 @@ class PullRequestWorkflow:
         worktree = self._worktree_of(channel_id, thread_ts)
         if worktree is None:
             return "올릴 작업 브랜치가 없습니다. 이 스레드에서 먼저 코드 작업을 실행해 주세요."
-        self._git(worktree, "push", "origin", pending.facts.branch)
-        url = self._gh.create_pull_request(
-            worktree, head=pending.facts.branch, base=pending.facts.base, draft=pending.draft
-        )
+        try:
+            self._git(worktree, "push", "origin", pending.facts.branch)
+        except (RuntimeError, ValueError, subprocess.SubprocessError):
+            return (
+                "❌ 브랜치 푸시에 실패해 PR을 만들지 않았습니다. 자동 재시도하지 않았습니다. "
+                "원인을 확인한 뒤 `PR`을 다시 보내 주세요."
+            )
+        try:
+            url = self._gh.create_pull_request(
+                worktree, head=pending.facts.branch, base=pending.facts.base, draft=pending.draft
+            )
+        except PullRequestError as exc:
+            existing = f"\n기존 PR: {exc.url}" if exc.url else ""
+            return (
+                f"⚠️ 브랜치 푸시는 완료했지만 PR은 만들지 못했습니다. {exc}{existing}\n"
+                "자동 재시도하지 않았습니다."
+            )
         return f"✅ PR을 만들었습니다: {url}"
 
     def cancel(self, channel_id: str, thread_ts: str) -> str | None:
