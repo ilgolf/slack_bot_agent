@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 from src.code.github import GhCli, GhResult
@@ -33,12 +34,15 @@ class Calls:
         return GhResult(0, self._gh_url + "\n", "")
 
 
-def _workflow(calls: Calls, *, facts: PullRequestFacts | None = _FACTS) -> PullRequestWorkflow:
+def _workflow(
+    calls: Calls, *, facts: PullRequestFacts | None = _FACTS, ttl: timedelta | None = None
+) -> PullRequestWorkflow:
     return PullRequestWorkflow(
         facts_source=lambda channel_id, thread_ts: facts,
         worktree_of=lambda channel_id, thread_ts: Path("/wt"),
         git=GitCommands(calls.git_runner),
         gh=GhCli(calls.gh_runner),
+        **({"ttl": ttl} if ttl is not None else {}),
     )
 
 
@@ -113,4 +117,42 @@ def test_the_requester_pushes_the_branch_then_opens_the_pull_request_exactly_onc
     assert "https://github.com/acme/repo/pull/7" in reply
     assert calls.log == ["git push origin bot/C1-1.0", "gh pr create"]
     assert again is None
+    assert not workflow.has_pending("C1", "1.0")
+
+
+def test_a_branch_without_commits_gets_no_draft() -> None:
+    facts = PullRequestFacts("bot/C1-1.0", "main", 0, "", [])
+    workflow = _workflow(Calls(), facts=facts)
+
+    reply = workflow.preview("C1", "1.0", "PR", requester="U42")
+
+    assert "올릴 커밋이 없습니다" in reply
+    assert not workflow.has_pending("C1", "1.0")
+
+
+def test_an_expired_draft_is_not_sent_and_says_so() -> None:
+    calls = Calls()
+    workflow = _workflow(calls, ttl=timedelta(seconds=-1))
+    workflow.preview("C1", "1.0", "PR", requester="U42")
+
+    reply = workflow.confirm("C1", "1.0", user_id="U42")
+
+    assert reply is not None
+    assert "만료" in reply
+    assert calls.log == []
+    assert not workflow.has_pending("C1", "1.0")
+
+
+def test_cancelling_drops_the_draft_without_touching_git_or_github() -> None:
+    calls = Calls()
+    workflow = _workflow(calls)
+    workflow.preview("C1", "1.0", "PR", requester="U42")
+
+    reply = workflow.cancel("C1", "1.0")
+    nothing = workflow.cancel("C1", "1.0")
+
+    assert reply is not None
+    assert "취소" in reply
+    assert nothing is None
+    assert calls.log == []
     assert not workflow.has_pending("C1", "1.0")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 
@@ -28,6 +29,7 @@ class PendingPullRequest:
     facts: PullRequestFacts
     draft: PullRequestDraft
     requester: str | None
+    created_at: datetime
 
 
 FactsSource = Callable[[str, str], PullRequestFacts | None]
@@ -42,7 +44,9 @@ class PullRequestWorkflow:
         worktree_of: WorktreeOf,
         git: GitCommands,
         gh: GhCli,
+        ttl: timedelta = timedelta(minutes=15),
     ) -> None:
+        self._ttl = ttl
         self._facts_source = facts_source
         self._worktree_of = worktree_of
         self._git = git
@@ -56,20 +60,29 @@ class PullRequestWorkflow:
         facts = self._facts_source(channel_id, thread_ts)
         if facts is None:
             return "올릴 작업 브랜치가 없습니다. 이 스레드에서 먼저 코드 작업을 실행해 주세요."
+        if facts.commit_count == 0:
+            return f"올릴 커밋이 없습니다. `{facts.base}`와 같은 상태입니다."
         draft = build_pull_request(
             command,
             commit_subject=facts.first_commit_subject,
             changed_files=facts.changed_files,
         )
         with self._lock:
-            self._pending[(channel_id, thread_ts)] = PendingPullRequest(facts, draft, requester)
+            self._pending[(channel_id, thread_ts)] = PendingPullRequest(
+                facts, draft, requester, datetime.now(UTC)
+            )
         return _render_preview(facts, draft)
 
     def confirm(self, channel_id: str, thread_ts: str, *, user_id: str | None) -> str | None:
         """`실행`: 요청자 본인만 보낼 수 있다. 초안이 없으면 `None`(다른 흐름이 처리)."""
-        pending = self.pending(channel_id, thread_ts)
+        with self._lock:
+            pending = self._pending.get((channel_id, thread_ts))
         if pending is None:
             return None
+        if self._expired(pending):
+            with self._lock:
+                self._pending.pop((channel_id, thread_ts), None)
+            return "보류된 PR 초안이 만료되었습니다. `PR`을 다시 보내 주세요. 푸시하지 않았습니다."
         if user_id is None or user_id != pending.requester:
             return "PR을 요청한 사람만 `실행`할 수 있습니다. 초안은 그대로 남겨 두었습니다."
         with self._lock:
@@ -83,13 +96,27 @@ class PullRequestWorkflow:
         )
         return f"✅ PR을 만들었습니다: {url}"
 
+    def cancel(self, channel_id: str, thread_ts: str) -> str | None:
+        """`취소`: 초안을 버린다. 초안이 없으면 `None`(다른 흐름이 처리)."""
+        if self.pending(channel_id, thread_ts) is None:
+            return None
+        with self._lock:
+            self._pending.pop((channel_id, thread_ts), None)
+        return "보류된 PR 초안을 취소했습니다. 푸시하지 않았습니다."
+
     def pending(self, channel_id: str, thread_ts: str) -> PendingPullRequest | None:
         with self._lock:
-            return self._pending.get((channel_id, thread_ts))
+            pending = self._pending.get((channel_id, thread_ts))
+            if pending is not None and self._expired(pending):
+                self._pending.pop((channel_id, thread_ts), None)
+                return None
+            return pending
+
+    def _expired(self, pending: PendingPullRequest) -> bool:
+        return datetime.now(UTC) - pending.created_at > self._ttl
 
     def has_pending(self, channel_id: str, thread_ts: str) -> bool:
-        with self._lock:
-            return (channel_id, thread_ts) in self._pending
+        return self.pending(channel_id, thread_ts) is not None
 
 
 def _render_preview(facts: PullRequestFacts, draft: PullRequestDraft) -> str:
