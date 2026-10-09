@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from src.code.github import GhCli, GhResult
+from src.code.github import GhCli, GhResult, PullRequestError
 from src.code.pr_workflow import PullRequestFacts, PullRequestWorkflow
 from src.code.workspace import GitCommands
 
@@ -234,3 +234,38 @@ def test_a_push_timeout_is_reported_as_a_failed_push() -> None:
     assert reply is not None
     assert "푸시에 실패" in reply
     assert calls.log == ["git push origin bot/C1-1.0"]
+
+
+def _raising(error: Exception) -> PullRequestWorkflow:
+    def facts_source(channel_id: str, thread_ts: str) -> PullRequestFacts | None:
+        raise error
+
+    calls = Calls()
+    return PullRequestWorkflow(
+        facts_source=facts_source,
+        worktree_of=lambda channel_id, thread_ts: Path("/wt"),
+        git=GitCommands(calls.git_runner),
+        gh=GhCli(calls.gh_runner),
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (PullRequestError("auth"), "gh auth login"),
+        (PullRequestError("timeout"), "GitHub에서 확인"),
+        (RuntimeError("git 명령이 실패했습니다."), "git"),
+        (subprocess.TimeoutExpired("git", 30), "git"),
+        (ValueError("x"), "git"),
+    ],
+)
+def test_a_failure_while_reading_branch_facts_is_told_to_the_user_and_keeps_no_draft(
+    error: Exception, expected: str
+) -> None:
+    workflow = _raising(error)
+
+    reply = workflow.preview("C1", "1.0", "PR", requester="U42")
+
+    assert "PR 초안을 만들지 못했습니다" in reply
+    assert expected in reply
+    assert not workflow.has_pending("C1", "1.0")

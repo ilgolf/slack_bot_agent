@@ -58,7 +58,12 @@ class PullRequestWorkflow:
     def preview(
         self, channel_id: str, thread_ts: str, command: str, *, requester: str | None = None
     ) -> str:
-        facts = self._facts_source(channel_id, thread_ts)
+        try:
+            facts = self._facts_source(channel_id, thread_ts)
+        except PullRequestError as exc:
+            return f"PR 초안을 만들지 못했습니다. {exc}"
+        except (RuntimeError, ValueError, subprocess.SubprocessError):
+            return "PR 초안을 만들지 못했습니다. git으로 브랜치 정보를 읽지 못했습니다."
         if facts is None:
             return "올릴 작업 브랜치가 없습니다. 이 스레드에서 먼저 코드 작업을 실행해 주세요."
         if facts.commit_count == 0:
