@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from src.code.agent import AnalysisAgent
+from src.code.pr_workflow import PullRequestWorkflow
 from src.code.workflow import ExecutionWorkflow
 from src.core.plan_first import PlanAnswer, parse_choice
 from src.linear.workflow import LinearIntegrationWorkflow
@@ -14,6 +15,12 @@ from src.slack.request_router import RequestIntent, RequestRouter, RoutedRequest
 from src.slack.thread_context import ThreadContextStore
 from src.slack.thread_summary_workflow import ThreadSummaryWorkflow
 
+_AMBIGUOUS_PENDING = (
+    "보류된 작업이 여러 개라 자동으로 고르지 않았습니다. "
+    "새 요청으로 원하는 작업을 다시 지정해 주세요."
+)
+_NO_PENDING = "실행할 보류 작업이 없습니다."
+
 
 @dataclass
 class RequestCoordinator:
@@ -21,6 +28,7 @@ class RequestCoordinator:
     execution_workflow: ExecutionWorkflow
     linear_workflow: LinearIntegrationWorkflow
     thread_summary_workflow: ThreadSummaryWorkflow | None = None
+    pull_request_workflow: PullRequestWorkflow | None = None
 
     def process(
         self,
@@ -48,6 +56,7 @@ class RequestCoordinator:
                 thread_context=thread_context,
                 agent=agent,
                 on_progress=on_progress,
+                user_id=user_id,
             )
         # One owner appends both messages. Workflows deliberately remain
         # context-free, so Slack and /debug/command cannot diverge.
@@ -77,7 +86,10 @@ class RequestCoordinator:
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
         on_progress: Callable[[str], None] | None = None,
+        user_id: str | None = None,
     ) -> str:
+        if routed.intent is RequestIntent.PULL_REQUEST:
+            return self._preview_pull_request(routed, channel_id, thread_ts, user_id)
         if routed.intent is RequestIntent.CONTROL_CONFIRM:
             return self._confirm(
                 routed,
@@ -86,6 +98,7 @@ class RequestCoordinator:
                 text=text,
                 thread_context=thread_context,
                 agent=agent,
+                user_id=user_id,
             )
         if routed.intent is RequestIntent.CONTROL_CANCEL:
             return self._cancel(
@@ -157,6 +170,20 @@ class RequestCoordinator:
             record_context=False,
         )
 
+    def _other_pending(self, channel_id: str, thread_ts: str) -> bool:
+        return self.execution_workflow.has_pending(
+            channel_id, thread_ts
+        ) or self.linear_workflow.has_pending(channel_id, thread_ts)
+
+    def _preview_pull_request(
+        self, routed: RoutedRequest, channel_id: str, thread_ts: str, user_id: str | None
+    ) -> str:
+        if self.pull_request_workflow is None:
+            return "PR 기능이 설정되지 않았습니다."
+        return self.pull_request_workflow.preview(
+            channel_id, thread_ts, routed.text, requester=user_id
+        )
+
     def _confirm(
         self,
         routed: RoutedRequest,
@@ -166,7 +193,13 @@ class RequestCoordinator:
         text: str,
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
+        user_id: str | None = None,
     ) -> str:
+        pull_request = self.pull_request_workflow
+        if pull_request is not None and pull_request.has_pending(channel_id, thread_ts):
+            if self._other_pending(channel_id, thread_ts):
+                return _AMBIGUOUS_PENDING
+            return pull_request.confirm(channel_id, thread_ts, user_id=user_id) or _NO_PENDING
         # Try code execution directly rather than relying on a separate
         # ownership pre-check. A confirmation must never fall through to LLM
         # analysis merely because a pending-store observation races or expires.
@@ -203,6 +236,11 @@ class RequestCoordinator:
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
     ) -> str:
+        pull_request = self.pull_request_workflow
+        if pull_request is not None and pull_request.has_pending(channel_id, thread_ts):
+            if self._other_pending(channel_id, thread_ts):
+                return _AMBIGUOUS_PENDING
+            return pull_request.cancel(channel_id, thread_ts) or "취소할 보류 작업이 없습니다."
         owners = [
             workflow
             for workflow in (self.execution_workflow, self.linear_workflow)
