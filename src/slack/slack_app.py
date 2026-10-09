@@ -24,7 +24,7 @@ from src.slack.slack_thread import SlackThreadReader
 from src.slack.thread_context import ThreadContextStore
 from src.slack.thread_summarizer import ThreadSummarizer
 from src.slack.thread_summary_workflow import ThreadSummaryWorkflow
-from src.slack.workflow_factory import build_execution_workflow
+from src.slack.workflow_factory import build_execution_workflow, build_pull_request_workflow
 
 
 class SlackConfigError(RuntimeError):
@@ -61,6 +61,8 @@ def handle_app_mention(
         initial_status = "Linear 작업 중입니다…"
     elif intent is RequestIntent.THREAD_SUMMARY:
         initial_status = "스레드 요약 중입니다…"
+    elif intent is RequestIntent.PULL_REQUEST:
+        initial_status = "PR 초안 준비 중입니다…"
     status_message = say(text=initial_status, thread_ts=thread_ts)
     on_progress = _progress_updater(client, channel_id, status_message)
     if run_store is not None:
@@ -126,6 +128,7 @@ def start_socket_mode(
     run_store = ThreadRunStore()
     linear_workflow = LinearIntegrationWorkflow(settings=settings)
     execution_workflow = build_execution_workflow(settings)
+    pull_request_workflow = build_pull_request_workflow(execution_workflow)
     thread_summary_workflow = (
         ThreadSummaryWorkflow(
             reader=SlackThreadReader(slack_app.client), summarizer=thread_summarizer
@@ -138,6 +141,7 @@ def start_socket_mode(
         execution_workflow=execution_workflow,
         linear_workflow=linear_workflow,
         thread_summary_workflow=thread_summary_workflow,
+        pull_request_workflow=pull_request_workflow,
     )
 
     @slack_app.event("app_mention")

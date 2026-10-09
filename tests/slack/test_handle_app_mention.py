@@ -15,16 +15,20 @@ from src.core.run_state import ThreadRunState, ThreadRunStore
 from src.linear.workflow import LinearIntegrationWorkflow
 from src.slack.dispatch import render_result
 from src.slack.request_coordinator import RequestCoordinator
+from src.slack.request_router import RequestRouter
 from src.slack.slack_app import handle_app_mention
 from src.slack.thread_context import ThreadContextStore
 from tests.router_doubles import WordGatedRouter
 
 
 def _coordinator(
-    tmp_path: Path, *, linear_workflow: LinearIntegrationWorkflow | None = None
+    tmp_path: Path,
+    *,
+    linear_workflow: LinearIntegrationWorkflow | None = None,
+    router: RequestRouter | None = None,
 ) -> RequestCoordinator:
     return RequestCoordinator(
-        router=WordGatedRouter(),
+        router=router or WordGatedRouter(),
         execution_workflow=ExecutionWorkflow(project_resolver=ProjectResolver(root=tmp_path)),
         linear_workflow=linear_workflow
         or LinearIntegrationWorkflow(settings=Settings(linear_api_key=None)),
@@ -198,3 +202,17 @@ def test_the_slack_user_who_mentioned_the_bot_reaches_the_coordinator(tmp_path: 
     )
 
     assert coordinator.requesters == ["U42"]
+
+
+def test_a_pr_mention_shows_a_pull_request_status_first(tmp_path: Path) -> None:
+    say = RecordingSay()
+
+    handle_app_mention(
+        {"channel": "C1", "ts": "1.1", "text": "PR", "user": "U1"},
+        say,
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=FakeAnalysisAgent(),
+        coordinator=_coordinator(tmp_path, router=RequestRouter()),
+    )
+
+    assert say.calls[0] == {"text": "PR 초안 준비 중입니다…", "thread_ts": "1.1"}

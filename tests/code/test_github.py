@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from src.code.github import GhCli, GhResult, PullRequestError
+from src.code.github import GhCli, GhResult, PullRequestError, run_gh
 from src.code.pull_request import PullRequestDraft
 
 
@@ -115,5 +116,46 @@ def test_the_default_branch_is_read_with_one_fixed_argv() -> None:
 def test_an_unusable_default_branch_name_is_a_failure_not_an_argument(output: str) -> None:
     with pytest.raises(PullRequestError) as raised:
         GhCli(FakeGh(GhResult(0, output, ""))).default_branch(Path("/repo"))
+
+    assert raised.value.code == "failed"
+
+
+def test_the_real_runner_uses_no_shell_a_timeout_and_the_repo_as_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> object:
+        seen["argv"] = argv
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="out", stderr="err")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_gh(["gh", "pr", "create"], Path("/repo"))
+
+    assert result == GhResult(0, "out", "err")
+    assert seen["argv"] == ["gh", "pr", "create"]
+    assert seen["cwd"] == Path("/repo")
+    assert seen.get("shell", False) is False
+    assert seen["timeout"] == 60
+    assert seen["stdin"] == subprocess.DEVNULL
+
+
+def test_the_real_runner_turns_a_subprocess_timeout_into_a_timeout_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(argv: list[str], **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(argv, 60)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(TimeoutError):
+        run_gh(["gh", "pr", "create"], Path("/repo"))
+
+
+def test_a_missing_gh_binary_is_a_plain_failure() -> None:
+    with pytest.raises(PullRequestError) as raised:
+        _create(FakeGh(FileNotFoundError("gh")))
 
     assert raised.value.code == "failed"

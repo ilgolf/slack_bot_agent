@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from src.core.config import Settings
-from src.slack.workflow_factory import build_execution_workflow
+from src.slack.workflow_factory import build_execution_workflow, build_pull_request_workflow
 
 
 @pytest.fixture(autouse=True)
@@ -48,3 +48,22 @@ def test_edit_mode_falls_back_to_plan_and_logs_why_under_a_dot_claude_directory(
 
     assert workflow.code_work_mode == "plan"
     assert any(".claude" in record.getMessage() for record in caplog.records)
+
+
+def test_the_pull_request_workflow_shares_the_code_workflows_thread_worktrees(
+    tmp_path: Path,
+) -> None:
+    execution = build_execution_workflow(_settings(tmp_path))
+
+    pull_request = build_pull_request_workflow(execution)
+
+    assert pull_request is not None
+    # No worktree exists for this thread, so nothing is read and nothing runs.
+    assert "올릴 작업 브랜치가 없습니다" in pull_request.preview("C1", "1.0", "PR", requester="U1")
+
+
+def test_without_thread_worktrees_there_is_no_pull_request_workflow(tmp_path: Path) -> None:
+    execution = build_execution_workflow(_settings(tmp_path))
+    execution.workspaces = None
+
+    assert build_pull_request_workflow(execution) is None

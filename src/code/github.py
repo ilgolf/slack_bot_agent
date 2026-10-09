@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,26 @@ class PullRequestError(Exception):
         super().__init__(_MESSAGES[code])
         self.code = code
         self.url = url
+
+
+GH_TIMEOUT_SECONDS = 60
+
+
+def run_gh(argv: list[str], cwd: Path) -> GhResult:
+    """셸 없이 `gh`를 실행한다. 입력은 막고(`stdin`) 시간 제한을 둔다."""
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise TimeoutError from None
+    return GhResult(completed.returncode, completed.stdout, completed.stderr)
 
 
 class GhCli:
@@ -82,6 +103,8 @@ class GhCli:
             result = self._runner(argv, repo)
         except TimeoutError:
             raise PullRequestError("timeout") from None
+        except OSError:
+            raise PullRequestError("failed") from None
         if result.returncode != 0:
             raise _failure(result.stderr)
         return result.stdout.strip()
