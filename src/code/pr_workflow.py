@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Lock
 
+from src.code.github import GhCli
 from src.code.pull_request import PullRequestDraft, build_pull_request
+from src.code.workspace import GitCommands
 
 
 @dataclass(frozen=True)
@@ -28,11 +31,22 @@ class PendingPullRequest:
 
 
 FactsSource = Callable[[str, str], PullRequestFacts | None]
+WorktreeOf = Callable[[str, str], Path | None]
 
 
 class PullRequestWorkflow:
-    def __init__(self, *, facts_source: FactsSource) -> None:
+    def __init__(
+        self,
+        *,
+        facts_source: FactsSource,
+        worktree_of: WorktreeOf,
+        git: GitCommands,
+        gh: GhCli,
+    ) -> None:
         self._facts_source = facts_source
+        self._worktree_of = worktree_of
+        self._git = git
+        self._gh = gh
         self._lock = Lock()
         self._pending: dict[tuple[str, str], PendingPullRequest] = {}
 
@@ -50,6 +64,24 @@ class PullRequestWorkflow:
         with self._lock:
             self._pending[(channel_id, thread_ts)] = PendingPullRequest(facts, draft, requester)
         return _render_preview(facts, draft)
+
+    def confirm(self, channel_id: str, thread_ts: str, *, user_id: str | None) -> str | None:
+        """`실행`: 요청자 본인만 보낼 수 있다. 초안이 없으면 `None`(다른 흐름이 처리)."""
+        pending = self.pending(channel_id, thread_ts)
+        if pending is None:
+            return None
+        if user_id is None or user_id != pending.requester:
+            return "PR을 요청한 사람만 `실행`할 수 있습니다. 초안은 그대로 남겨 두었습니다."
+        with self._lock:
+            self._pending.pop((channel_id, thread_ts), None)
+        worktree = self._worktree_of(channel_id, thread_ts)
+        if worktree is None:
+            return "올릴 작업 브랜치가 없습니다. 이 스레드에서 먼저 코드 작업을 실행해 주세요."
+        self._git(worktree, "push", "origin", pending.facts.branch)
+        url = self._gh.create_pull_request(
+            worktree, head=pending.facts.branch, base=pending.facts.base, draft=pending.draft
+        )
+        return f"✅ PR을 만들었습니다: {url}"
 
     def pending(self, channel_id: str, thread_ts: str) -> PendingPullRequest | None:
         with self._lock:
