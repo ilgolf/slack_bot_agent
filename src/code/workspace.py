@@ -29,6 +29,14 @@ _ALLOWED_SUBCOMMANDS = {
 _ALLOWED_WORKTREE_ACTIONS = {"add", "remove", "list", "prune"}
 BOT_BRANCH_PREFIX = "bot/"
 _PUSHABLE_BRANCH = re.compile(r"bot/[A-Za-z0-9._-]+")
+_SAFE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+
+
+def is_safe_ref(name: str) -> bool:
+    """A branch name that cannot be read as an option or a refspec (`-x`, `a:b`, spaces)."""
+    return _SAFE_REF.fullmatch(name) is not None
+
+
 _HOOKS_OFF = ("-c", "core.hooksPath=/dev/null")
 _BOT_IDENTITY = {
     "GIT_AUTHOR_NAME": "Slack Bot Agent",

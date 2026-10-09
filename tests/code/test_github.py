@@ -95,3 +95,25 @@ def test_an_existing_pull_request_error_carries_its_url() -> None:
         _create(gh)
 
     assert raised.value.url == "https://github.com/acme/repo/pull/3"
+
+
+def test_the_default_branch_is_read_with_one_fixed_argv() -> None:
+    gh = FakeGh(GhResult(0, "main\n", ""))
+
+    branch = GhCli(gh).default_branch(Path("/repo"))
+
+    assert branch == "main"
+    assert gh.calls == [
+        (
+            ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+            Path("/repo"),
+        )
+    ]
+
+
+@pytest.mark.parametrize("output", ["", "--delete", "ma in", "main\nother", "a:b", "-x"])
+def test_an_unusable_default_branch_name_is_a_failure_not_an_argument(output: str) -> None:
+    with pytest.raises(PullRequestError) as raised:
+        GhCli(FakeGh(GhResult(0, output, ""))).default_branch(Path("/repo"))
+
+    assert raised.value.code == "failed"

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.code.pull_request import PullRequestDraft
+from src.code.workspace import is_safe_ref
 
 
 @dataclass(frozen=True)
@@ -61,16 +62,29 @@ class GhCli:
             "--body",
             draft.body,
         ]
+        url = self._run(argv, repo)
+        if not url:
+            raise PullRequestError("failed")
+        return url
+
+    def default_branch(self, repo: Path) -> str:
+        """저장소의 기본 브랜치 이름. 다른 명령의 인자로 쓰이므로 안전한 이름만 돌려준다."""
+        name = self._run(
+            ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+            repo,
+        )
+        if not is_safe_ref(name):
+            raise PullRequestError("failed")
+        return name
+
+    def _run(self, argv: list[str], repo: Path) -> str:
         try:
             result = self._runner(argv, repo)
         except TimeoutError:
             raise PullRequestError("timeout") from None
         if result.returncode != 0:
             raise _failure(result.stderr)
-        url = result.stdout.strip()
-        if not url:
-            raise PullRequestError("failed")
-        return url
+        return result.stdout.strip()
 
 
 def _failure(stderr: str) -> PullRequestError:
