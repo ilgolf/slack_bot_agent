@@ -170,3 +170,31 @@ def test_thread_summary_request_shows_a_thread_summary_status(tmp_path: Path) ->
 
     assert say.calls[0] == {"text": "스레드 요약 중입니다…", "thread_ts": "1.0"}
     assert "1개 메시지를 요약했습니다" in say.calls[1]["text"]
+
+
+class UserRecordingCoordinator(RequestCoordinator):
+    requesters: list[str | None] = []
+
+    def process(self, *args: Any, **kwargs: Any) -> Any:
+        self.requesters.append(kwargs.get("user_id"))
+        return super().process(*args, **kwargs)
+
+
+def test_the_slack_user_who_mentioned_the_bot_reaches_the_coordinator(tmp_path: Path) -> None:
+    base = _coordinator(tmp_path)
+    coordinator = UserRecordingCoordinator(
+        router=base.router,
+        execution_workflow=base.execution_workflow,
+        linear_workflow=base.linear_workflow,
+    )
+    coordinator.requesters = []
+
+    handle_app_mention(
+        {"channel": "C1", "ts": "1.1", "text": "분석해줘", "user": "U42"},
+        RecordingSay(),
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=FakeAnalysisAgent(),
+        coordinator=coordinator,
+    )
+
+    assert coordinator.requesters == ["U42"]

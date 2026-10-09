@@ -75,6 +75,7 @@ def handle_app_mention(
                 thread_context=thread_context,
                 agent=agent,
                 on_progress=on_progress,
+                user_id=event.get("user"),
             )
         except Exception:
             if run_store is not None:

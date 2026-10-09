@@ -31,6 +31,7 @@ class RequestCoordinator:
         thread_context: ThreadContextStore,
         agent: AnalysisAgent,
         on_progress: Callable[[str], None] | None = None,
+        user_id: str | None = None,
     ) -> tuple[RoutedRequest, str]:
         routed = self._plan_choice(text, channel_id, thread_ts) or self.router.route(text)
         if routed.text.casefold() in {"trace 요약", "trace summary"}:
