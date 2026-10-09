@@ -35,3 +35,13 @@ def test_without_a_thread_branch_to_send_no_draft_is_kept() -> None:
 
     assert "올릴 작업 브랜치가 없습니다" in reply
     assert not workflow.has_pending("C1", "1.0")
+
+
+def test_the_draft_remembers_who_asked_for_it() -> None:
+    workflow = PullRequestWorkflow(facts_source=lambda channel_id, thread_ts: _FACTS)
+
+    workflow.preview("C1", "1.0", "PR", requester="U42")
+
+    pending = workflow.pending("C1", "1.0")
+    assert pending is not None
+    assert pending.requester == "U42"

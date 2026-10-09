@@ -24,6 +24,7 @@ class PullRequestFacts:
 class PendingPullRequest:
     facts: PullRequestFacts
     draft: PullRequestDraft
+    requester: str | None
 
 
 FactsSource = Callable[[str, str], PullRequestFacts | None]
@@ -35,7 +36,9 @@ class PullRequestWorkflow:
         self._lock = Lock()
         self._pending: dict[tuple[str, str], PendingPullRequest] = {}
 
-    def preview(self, channel_id: str, thread_ts: str, command: str) -> str:
+    def preview(
+        self, channel_id: str, thread_ts: str, command: str, *, requester: str | None = None
+    ) -> str:
         facts = self._facts_source(channel_id, thread_ts)
         if facts is None:
             return "올릴 작업 브랜치가 없습니다. 이 스레드에서 먼저 코드 작업을 실행해 주세요."
@@ -45,8 +48,12 @@ class PullRequestWorkflow:
             changed_files=facts.changed_files,
         )
         with self._lock:
-            self._pending[(channel_id, thread_ts)] = PendingPullRequest(facts, draft)
+            self._pending[(channel_id, thread_ts)] = PendingPullRequest(facts, draft, requester)
         return _render_preview(facts, draft)
+
+    def pending(self, channel_id: str, thread_ts: str) -> PendingPullRequest | None:
+        with self._lock:
+            return self._pending.get((channel_id, thread_ts))
 
     def has_pending(self, channel_id: str, thread_ts: str) -> bool:
         with self._lock:
