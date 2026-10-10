@@ -529,4 +529,4 @@ plan-first로 에이전트가 쓴 `docs/linear/plan.md`(2026-10-07)에서 규칙
 - [x] 성공하면 PR URL, 푸시만 성공하면 그렇다고, 실패하면 이유를 알리고 재시도하지 않는다
 
 ### F. 문서 (기획 슬라이스 6)
-- [ ] `docs/README.md`·`harness/bot.md`·README에 `PR` 명령을 적는다
+- [x] `harness/bot.md`·`harness/requests.md`·README에 `PR` 명령을 적는다 (`docs/README.md`는 기획 문서 규칙이라 해당 없음)
