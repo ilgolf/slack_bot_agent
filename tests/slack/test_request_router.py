@@ -140,8 +140,44 @@ def test_other_wording_is_not_a_plan_review_answer() -> None:
     )
 
 
-@pytest.mark.parametrize("text", ["PR 올려줘", "pr", "PR 제목:", "이 PR 설명해줘"])
+@pytest.mark.parametrize("text", ["pr", "PR 제목:", "이 PR 설명해줘"])
 def test_only_the_exact_pr_command_is_a_pull_request(text: str) -> None:
     routed = RequestRouter(code_work_mode="plan").route(text)
+
+    assert routed.intent is RequestIntent.CODE_WORK
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "PR 올려",
+        "PR 올려줘",
+        "<@U1> PR 올려주세요",
+        "PR 만들어줘",
+        "PR 생성",
+        "PR 올려 제목은 테스트 PR 이라고 올려",
+        "PR 올려줘 제목을 로그인 수정으로 올려줘",
+    ],
+)
+def test_a_natural_pr_request_is_a_pull_request(text: str) -> None:
+    routed = RequestRouter(code_work_mode="edit").route(text)
+
+    assert routed.intent is RequestIntent.PULL_REQUEST
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "PR 올릴 수 있어?",
+        "PR 올리는 방법 알려줘",
+        "PR 기능 지원해?",
+        "PR 설명해줘",
+        "이 PR 올려줘",
+        "PR 리뷰 올려줘",
+        "코드 수정하고 PR 올려줘",
+    ],
+)
+def test_questions_and_other_sentences_about_prs_are_not_pr_commands(text: str) -> None:
+    routed = RequestRouter(code_work_mode="edit").route(text)
 
     assert routed.intent is RequestIntent.CODE_WORK

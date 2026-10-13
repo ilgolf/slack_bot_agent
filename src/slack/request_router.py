@@ -40,6 +40,10 @@ _CONFIRM = re.compile(r"^(실행|실행해줘|실행합니다)$")
 _CANCEL = re.compile(r"^(취소|취소해줘|취소합니다)$")
 _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
 _PULL_REQUEST = re.compile(r"PR(?:\s*제목\s*[:：]\s*\S[^\n]*)?")
+# `PR 올려 제목은 …`처럼 PR로 시작하고 올리기 동사가 바로 붙은 첫 줄. 푸시는 `실행` 뒤에만 나간다.
+_PULL_REQUEST_SENTENCE = re.compile(
+    r"PR\s*(?:을|를)?\s*(?:올려주세요|올려줘|올려|만들어줘|만들어|생성해줘|생성)(?:\s|$)"
+)
 _PLAN_CONFIRM = re.compile(
     r"^기획\s*확정\s+(linear|code|notion)(?:\s*(?:해줘|합니다))?$", re.IGNORECASE
 )
@@ -94,7 +98,7 @@ class RequestRouter:
             return RoutedRequest(RequestIntent.CONTROL_CANCEL, command, project_name, "취소")
         if _DISCARD.fullmatch(command):
             return RoutedRequest(RequestIntent.CODE_WORK, command, project_name)
-        if _PULL_REQUEST.fullmatch(command):
+        if _PULL_REQUEST.fullmatch(command) or _is_pull_request_sentence(command_line, command):
             return RoutedRequest(RequestIntent.PULL_REQUEST, command, project_name)
         plan_answer = parse_answer(command)
         if plan_answer is not None:
@@ -127,6 +131,13 @@ class RequestRouter:
         if self._code_work_mode == "analysis":
             return RoutedRequest(RequestIntent.PROJECT_ANALYSIS, command, project_name)
         return RoutedRequest(RequestIntent.CODE_WORK, command, project_name, mode_decided=True)
+
+
+def _is_pull_request_sentence(command_line: str, command: str) -> bool:
+    first_line = command.splitlines()[0] if command else ""
+    if not _PULL_REQUEST_SENTENCE.match(first_line):
+        return False
+    return "?" not in first_line and not any(m in command_line for m in _FEATURE_QUESTION_MARKERS)
 
 
 def _is_thread_summary_line(command_line: str) -> bool:

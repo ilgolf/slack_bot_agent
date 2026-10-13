@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from src.code.pull_request import build_pull_request
 
 
@@ -31,3 +33,19 @@ def test_the_body_lists_the_changed_files_and_no_diff_content() -> None:
     )
 
     assert draft.body == "변경한 파일:\n- `src/a.py`\n- `tests/test_a.py`"
+
+
+@pytest.mark.parametrize(
+    ("command", "title"),
+    [
+        ("PR 올려 제목은 테스트 PR 이라고 올려", "테스트 PR"),
+        ("PR 올려줘 제목을 로그인 수정으로 올려줘", "로그인 수정"),
+        ("PR 만들어 제목은 배포로 이동", "배포로 이동"),
+        ("PR 제목: 로그인 오류 수정", "로그인 오류 수정"),
+        ("PR 올려 제목은 로그인 오류 수정", "로그인 오류 수정"),
+    ],
+)
+def test_a_title_is_taken_from_a_natural_sentence(command: str, title: str) -> None:
+    draft = build_pull_request(command, commit_subject="bot: x", changed_files=["a.py"])
+
+    assert draft.title == title

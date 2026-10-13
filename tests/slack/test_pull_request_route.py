@@ -128,3 +128,15 @@ def test_without_a_pull_request_workflow_the_command_says_it_is_not_set_up(
     coordinator.pull_request_workflow = None
 
     assert "설정되지 않았습니다" in _send(coordinator, tmp_path, "PR", "U42")
+
+
+def test_the_sentence_that_failed_in_slack_now_previews_with_its_title(tmp_path: Path) -> None:
+    calls = Calls()
+    coordinator, pr = _coordinator(tmp_path, calls)
+
+    reply = _send(coordinator, tmp_path, "<@UBOT> PR 올려 제목은 테스트 PR 이라고 올려", "U42")
+
+    assert "PR 초안" in reply
+    assert "제목: 테스트 PR\n" in reply
+    assert pr.has_pending("C1", "1.0")
+    assert calls.log == []
