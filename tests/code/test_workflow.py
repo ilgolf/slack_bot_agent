@@ -4311,3 +4311,43 @@ def test_a_review_is_known_to_be_open_only_while_it_is(tmp_path: Path) -> None:
 
     _answer(workflow, "all_recommended")
     assert not workflow.has_plan_review("C1", "1.1")
+
+
+def test_a_message_that_forbids_edits_leaves_nothing_writable_even_when_developing(
+    tmp_path: Path,
+) -> None:
+    _plan_first_project(tmp_path, plan_status="확정")
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(lambda _worktree: None)
+
+    _ask_in_mode(workflow, context, agent, "my-project linear 현황을 요약해줘. 코드는 고치지 마.")
+
+    assert agent.write_roots == [()]
+    assert "[읽기 전용]" in agent.prompts[0]
+    assert "[개발 단계]" not in agent.prompts[0]
+
+
+def test_a_read_only_request_that_edits_anyway_is_rejected(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(_write("README.md", "changed\n"))
+
+    response = _ask_in_mode(
+        workflow, context, agent, "my-project README.md를 수정하지 말고 설명해줘"
+    )
+
+    assert response is not None
+    assert "허용" in response or "거부" in response or "폐기" in response
+    assert agent.write_roots == [()]
+
+
+def test_read_only_is_this_messages_wish_only(tmp_path: Path) -> None:
+    _git_project(tmp_path)
+    workflow, _, context = _edit_workflow(tmp_path)
+    first = EditAgent(lambda _worktree: None)
+    _ask_in_mode(workflow, context, first, "my-project README.md는 고치지 마, 설명만 해줘")
+    second = EditAgent(_write("README.md", "after\n"))
+
+    _ask_in_mode(workflow, context, second, "my-project README.md 수정해줘")
+
+    assert second.write_roots == [None]

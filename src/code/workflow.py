@@ -93,6 +93,7 @@ from src.core.project_resolver import (
     ProjectResolver,
     UnknownProject,
 )
+from src.core.read_only import wants_read_only
 from src.core.run_state import CodeWorkState, CodeWorkStateStore
 from src.core.skill_allowlist import claude_skill_names
 from src.slack.request_classifier import classify_request, find_project_name_candidates
@@ -760,7 +761,12 @@ class ExecutionWorkflow:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return "❌ 이 프로젝트는 worktree로 격리할 수 없어 직접 편집하지 않았습니다."
 
-        plan_limits = _plan_first_limits(worktree, command_text, earlier_user_messages)
+        # A message that forbids edits wins over every stage: nothing is writable this run.
+        plan_limits = (
+            _PlanFirstLimits(write_roots=(), stage="readonly")
+            if wants_read_only(command_text)
+            else _plan_first_limits(worktree, command_text, earlier_user_messages)
+        )
         write_roots = plan_limits.write_roots
         named = named | plan_limits.named
         plan_first = plan_limits.stage is not None

@@ -195,6 +195,12 @@ def _stage_policy(stage: str | None, area: str | None, plan_rules: str = "") -> 
             "[기획 단계] 어느 영역(linear·code·notion)의 개발인지 알 수 없습니다. 코드를 쓰지 "
             "말고 파일도 바꾸지 말고, 어느 영역인지 되물으세요.\n"
         )
+    if stage == "readonly":
+        return (
+            "[읽기 전용] 사용자가 이 요청에서 파일을 고치지 말라고 했습니다. 어떤 파일도 만들거나 "
+            "수정하지 말고, 코드를 읽어 근거와 함께 답만 하세요. 구현할 슬라이스가 있어도 "
+            "하지 마세요.\n"
+        )
     if stage == "developing" and area is not None:
         return (
             f"[개발 단계] `docs/{area}/plan.md`가 확정되었습니다. 기획의 `- [ ]` 슬라이스를 "
