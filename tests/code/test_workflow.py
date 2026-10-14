@@ -4378,3 +4378,23 @@ def test_read_only_is_this_messages_wish_only(tmp_path: Path) -> None:
     _ask_in_mode(workflow, context, second, "my-project README.md 수정해줘")
 
     assert second.write_roots == [None]
+
+
+def test_naming_plan_md_in_a_linear_request_unlocks_that_areas_plan(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="확정")
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(lambda _worktree: None)
+
+    _ask_in_mode(workflow, context, agent, "my-project linear plan.md 직접 수정해줘")
+
+    assert "docs/linear/plan.md" in agent.calls[0][2]
+
+
+def test_naming_plan_md_without_an_area_unlocks_only_the_root_plan(tmp_path: Path) -> None:
+    _plan_first_project(tmp_path, plan_status="확정")
+    workflow, _, context = _edit_workflow(tmp_path)
+    agent = EditAgent(lambda _worktree: None)
+
+    _ask_in_mode(workflow, context, agent, "my-project plan.md 직접 수정해줘")
+
+    assert "docs/linear/plan.md" not in agent.calls[0][2]

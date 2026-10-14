@@ -218,6 +218,19 @@ def _edit_named_paths_in_thread(
     return list(dict.fromkeys([*named, *earlier]))
 
 
+def _area_plan_for_named_plan(
+    worktree: Path, named: frozenset[str], messages: Sequence[str]
+) -> frozenset[str]:
+    """A bare `plan.md` in an area's conversation (`linear plan.md 수정해`) means that area's
+    plan, which lives at `docs/<영역>/plan.md`. Without a detected area nothing is added."""
+    if "plan.md" not in named:
+        return frozenset()
+    area = detect_area(messages)
+    if area is None or not plan_path(worktree, area).is_file():
+        return frozenset()
+    return frozenset({f"docs/{area}/plan.md"})
+
+
 def _is_guarded_path(path: str) -> bool:
     return is_protected_meta_path(path) or is_risky_path(path) or is_secret_path(path)
 
@@ -778,6 +791,9 @@ class ExecutionWorkflow:
         )
         write_roots = plan_limits.write_roots
         named = named | plan_limits.named
+        named = named | _area_plan_for_named_plan(
+            worktree, named, [*earlier_user_messages, command_text]
+        )
         plan_first = plan_limits.stage is not None
         # Only a project that opted in to plan-first gets a write limit; the agent is given
         # the keyword only then, so agents that predate it keep working unchanged.
