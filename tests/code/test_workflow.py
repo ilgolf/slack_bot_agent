@@ -30,7 +30,7 @@ from src.code.verifier import ExecutionResult, render_execution_result
 from src.code.workflow import ExecutionWorkflow
 from src.code.workspace import ThreadWorkspaces
 from src.core.plan_first import PlanAnswer, plan_status
-from src.core.project_resolver import ProjectResolver
+from src.core.project_resolver import ProjectResolver, UnknownProject
 from src.core.run_state import CodeWorkState, CodeWorkStateStore
 from src.slack.thread_context import ThreadContextStore
 
@@ -334,6 +334,33 @@ def test_linear_plan_document_cannot_add_unrequested_code_files(tmp_path: Path) 
     )
 
     assert result is not None and "명시한 plan.md만" in result
+    assert not workflow.has_pending("C1", "1.1")
+
+
+class UnknownProjectInvestigator(PlanningAgent):
+    """analyze() resolves the project name the request carries and cannot find it."""
+
+    def analyze(
+        self, question: str, *, channel_id: str = "-", thread_ts: str = "-"
+    ) -> AnalysisResult:
+        raise UnknownProject("수정해.")
+
+
+def test_a_project_the_investigation_cannot_resolve_is_reported_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "my-project").mkdir()
+    workflow = _workflow(tmp_path)
+
+    result = workflow.process(
+        channel_id="C1",
+        thread_ts="1.1",
+        text="my-project 로그인 오류 수정해줘",
+        thread_context=ThreadContextStore(root=tmp_path / "context"),
+        agent=UnknownProjectInvestigator(_plan()),
+    )
+
+    assert result == "대상 프로젝트를 찾을 수 없습니다."
     assert not workflow.has_pending("C1", "1.1")
 
 

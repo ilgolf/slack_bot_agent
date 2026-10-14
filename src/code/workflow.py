@@ -435,9 +435,18 @@ class ExecutionWorkflow:
         if callable(investigator) and (
             not explicit_target_paths or plan_follow_request or investigate_code
         ):
-            investigation = investigator(
-                contextual_text, channel_id=channel_id, thread_ts=thread_ts
-            )
+            try:
+                investigation = investigator(
+                    contextual_text, channel_id=channel_id, thread_ts=thread_ts
+                )
+            except AmbiguousProject:
+                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+                return (
+                    "같은 Git 저장소 이름의 로컬 프로젝트가 여러 개입니다. 폴더명을 지정해 주세요."
+                )
+            except (InvalidProjectName, UnknownProject):
+                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+                return "대상 프로젝트를 찾을 수 없습니다."
             source_paths = [
                 source
                 for source in getattr(investigation, "sources", [])
