@@ -80,3 +80,16 @@ def test_classify_request_keeps_email_csv_creation_out_of_analysis_fast_paths(
     )
 
     assert request.kind is RequestKind.GENERAL_ANALYSIS
+
+
+def test_a_word_before_the_project_keyword_is_not_the_project_when_a_real_one_is_named(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "my-project").mkdir()
+
+    request = classify_request(
+        "linear 문서 요약해줘. 코드는 수정해. 프로젝트는 my-project 야",
+        ProjectResolver(root=tmp_path),
+    )
+
+    assert request.project_name == "my-project"

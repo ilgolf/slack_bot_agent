@@ -39,9 +39,15 @@ def classify_request(question: str, project_resolver: ProjectResolver) -> Analys
     project_names = sorted(
         (path.name for path in project_resolver.project_directories()), key=len, reverse=True
     )
-    project_name = _explicit_project_name(current_message) or _find_project_name(
-        current_message, project_names
-    )
+    explicit_name = _explicit_project_name(current_message)
+    named_project = _find_project_name(current_message, project_names)
+    # "<word> 프로젝트" can catch an ordinary word ("수정해. 프로젝트는 …"). When that word is no
+    # project and the message names a real one, the real one wins; an unknown name alone stays,
+    # so it is reported instead of silently replaced.
+    known = {name.casefold() for name in project_names}
+    if explicit_name is not None and explicit_name.casefold() not in known and named_project:
+        explicit_name = None
+    project_name = explicit_name or named_project
     if project_name is None:
         project_name = _find_project_name(question, project_names)
     normalized_question = current_message.casefold()
