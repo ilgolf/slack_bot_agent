@@ -548,3 +548,12 @@ plan-first로 에이전트가 쓴 `docs/linear/plan.md`(2026-10-07)에서 규칙
 - [x] 읽기 전용이면 어느 단계(기획·개발·우회)여도 쓰기 가능 경로가 비고, 에이전트는 `[읽기 전용]` 안내만 받는다
 - [x] 읽기 전용 요청이 그래도 파일을 고치면 편집 뒤 검토가 거부한다
 - [x] 읽기 전용은 그 메시지에만 적용되고 다음 메시지로 이어지지 않는다
+
+---
+
+## Phase 35: `workflow.py` 분리 (2026-10-20 사용자 지시, 구조 전용)
+
+`code/workflow.py`(1,475줄)의 `ExecutionWorkflow`에 계획 확정 대화·직접 편집·계획 실행·자동 진행이 함께 있다. 동작은 바꾸지 않고 책임별로 나눈다. `ExecutionWorkflow`의 공개 메서드와 기존 테스트는 그대로 둔다. 이동마다 `ruff`·`mypy`·`pytest`가 통과해야 하고, 구조 변경 커밋(`structural:`)으로 따로 남긴다.
+
+### A. 계획 확정 대화 분리 (구조 전용, 동작 불변)
+- [x] `confirm_plan`·`has_plan_review`·`answer_plan_review`와 그 보조(`_PlanReview`·`_Recorded`·`_record_*`·`_next_question`)를 `code/plan_review.py`의 `PlanReviewDialogue`로 옮기고, `ExecutionWorkflow`는 위임만 한다

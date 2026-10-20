@@ -6,16 +6,14 @@ expiry, and the final verification report.  Local ``AGENTS.md`` and trusted
 skills are context for planning only; neither can relax these checks.
 """
 
-
 from __future__ import annotations
 
 import inspect
 import logging
 import re
 import subprocess
-import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -50,6 +48,7 @@ from src.code.plan import (
     next_unchecked_item,
     render_plan_preview,
 )
+from src.code.plan_review import PlanReviewDialogue
 from src.code.tooluse import CommandResult, ProjectExecutionTools, VerificationStatus, _project_path
 from src.code.verifier import (
     ExecutionResult,
@@ -65,21 +64,12 @@ from src.code.workspace import ThreadWorkspaces, WorkspaceError
 from src.core.harness import load_file
 from src.core.plan_first import (
     CONFIRMED,
-    MAX_DECISION_CHARS,
     PlanAnswer,
-    Question,
     detect_area,
-    has_open_questions,
-    open_questions,
-    parse_status,
     plan_first_enabled,
     plan_path,
     plan_status,
-    recommended_choice,
-    recommended_decision,
-    record_decision,
     wants_bypass,
-    with_status,
 )
 from src.core.plan_guard import (
     is_protected_meta_path,
@@ -115,14 +105,6 @@ _CANCELLATION = re.compile(r"^(취소|취소해줘|취소합니다)$")
 _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
 
 
-_PLAN_REVIEW_TTL_SECONDS = 30 * 60
-
-
-_NO_PLAN_REVIEW = (
-    "진행 중인 기획 검토가 없습니다. `기획 확정 <영역>`을 보내 열린 질문 확인을 시작해 주세요."
-)
-
-
 _NO_ROLLBACK_WARNING = "롤백 불가: 이 프로젝트는 worktree로 격리할 수 없어 원본에 직접 적용됩니다."
 
 
@@ -132,9 +114,7 @@ _MAX_ANSWER_CHARS = 3500  # stays under Slack's message length limit
 _MAX_AGENT_REPORT_CHARS = 1500  # the agent's own summary beside the diffs
 
 
-_PATH_IN_REQUEST = re.compile(
-    r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?=$|[\s,.:!?…]|[은는이가을를에의])"
-)
+_PATH_IN_REQUEST = re.compile(r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?=$|[\s,.:!?…]|[은는이가을를에의])")
 
 
 # ExecutionWorkflow's plan-building gate intentionally uses narrower test
@@ -154,26 +134,6 @@ _EXECUTION_MARKERS = (
     + CODE_INTEGRATION_MARKERS
     + PLAN_CONTINUATION_MARKERS
 )
-
-
-@dataclass
-class _PlanReview:
-    """An open plan review in one thread: which area, when it started, what was put on hold."""
-
-    area: str
-    started: float
-    held: set[str] = field(default_factory=set)
-
-
-@dataclass(frozen=True)
-class _Recorded:
-    text: str
-    decision: str
-    error: str | None = None
-
-
-def _question_key(question: Question) -> str:
-    return f"{question.number}\n{question.text}"
 
 
 def _with_thread_ids(
@@ -280,7 +240,7 @@ class ExecutionWorkflow:
         self.workspaces = workspaces
         self.code_work_mode = code_work_mode
         self.max_autopilot_items = max_autopilot_items
-        self._plan_reviews: dict[tuple[str, str], _PlanReview] = {}
+        self._plan_reviews = PlanReviewDialogue(workspaces)
         self._autopilot_active: set[tuple[str, str]] = set()
         self._autopilot_cancelled: set[tuple[str, str]] = set()
         self._last_results: dict[tuple[str, str], ExecutionResult] = {}
@@ -531,9 +491,7 @@ class ExecutionWorkflow:
                         if path not in unauthorized_protected_paths
                     ],
                     steps=[
-                        step
-                        for step in plan.steps
-                        if step.path not in unauthorized_protected_paths
+                        step for step in plan.steps if step.path not in unauthorized_protected_paths
                     ],
                 )
                 if not plan.steps:
@@ -610,9 +568,7 @@ class ExecutionWorkflow:
             plan.applied_skills,
         )
         diffs = _preview_diffs(detailed_context.root, plan.steps)
-        evidence_paths = [
-            item.relative_path for item in existing_files if item.content is not None
-        ]
+        evidence_paths = [item.relative_path for item in existing_files if item.content is not None]
         preview = render_plan_preview(
             plan, detailed_context.git, diffs, evidence_paths=evidence_paths
         )
@@ -672,9 +628,7 @@ class ExecutionWorkflow:
             state = self.code_work_state_store.state(channel_id=channel_id, thread_ts=thread_ts)
             if state is not CodeWorkState.SUCCEEDED:
                 return f"⛔ 자동 진행 중단 ({completed}개 완료): `{item}` 실패\n{result}"
-            plan_file.write_text(
-                plan_file.read_text().replace(f"- [ ] {item}", f"- [x] {item}", 1)
-            )
+            plan_file.write_text(plan_file.read_text().replace(f"- [ ] {item}", f"- [x] {item}", 1))
             completed += 1
             finished = self._last_results.get(key)
             files = ", ".join(
@@ -964,200 +918,13 @@ class ExecutionWorkflow:
         return f"❌ 코드 에이전트의 변경이 안전 검사를 통과하지 못했습니다.\n{listed}\n{outcome}"
 
     def confirm_plan(self, channel_id: str, thread_ts: str, area: str) -> str:
-        """The user's `기획 확정 <영역>` (plan.md Phase 28): only this code, never the agent,
-        sets an area's plan to `확정`, and only when it has no open questions left."""
-        worktree = (
-            self.workspaces.thread_worktree(channel_id, thread_ts)
-            if self.workspaces is not None
-            else None
-        )
-        if worktree is None:
-            return (
-                "확정할 기획이 없습니다. 먼저 `개발 진행해`로 이 스레드에서 기획을 쓰게 해 주세요."
-            )
-        if not plan_first_enabled(worktree):
-            return "이 프로젝트는 기획 우선 모드가 아닙니다 (`.piplup/plan-first`가 없습니다)."
-        relative = f"docs/{area}/plan.md"
-        try:
-            text = plan_path(worktree, area).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return f"`{relative}`가 없어 확정할 수 없습니다. 먼저 기획을 쓰게 해 주세요."
-        if parse_status(text) == CONFIRMED:
-            return f"`{relative}`는 이미 확정되어 있습니다."
-        if has_open_questions(text):
-            self._plan_reviews[(channel_id, thread_ts)] = _PlanReview(area, time.monotonic())
-            return self._next_question(channel_id, thread_ts, worktree, area, text)
-        assert self.workspaces is not None
-        try:
-            plan_path(worktree, area).write_text(with_status(text, CONFIRMED), encoding="utf-8")
-            self.workspaces.commit(worktree, [relative], f"기획 확정: {area}")
-        except (OSError, WorkspaceError):
-            return f"❌ `{relative}`를 확정하지 못했습니다. 파일을 확인해 주세요."
-        return (
-            f"✅ `{relative}`를 확정했습니다. 이제 같은 스레드에서 개발을 요청하면 "
-            "기획의 슬라이스를 구현합니다."
-        )
+        return self._plan_reviews.confirm_plan(channel_id, thread_ts, area)
 
     def has_plan_review(self, channel_id: str, thread_ts: str) -> bool:
-        review = self._plan_reviews.get((channel_id, thread_ts))
-        return review is not None and time.monotonic() - review.started <= _PLAN_REVIEW_TTL_SECONDS
+        return self._plan_reviews.has_plan_review(channel_id, thread_ts)
 
     def answer_plan_review(self, channel_id: str, thread_ts: str, answer: PlanAnswer) -> str:
-        """An answer to the plan review `기획 확정 <영역>` started (plan.md Phase 31). The
-        dialogue is plain code: it asks, the person decides, the decision is recorded."""
-        key = (channel_id, thread_ts)
-        review = self._plan_reviews.get(key)
-        worktree = (
-            self.workspaces.thread_worktree(channel_id, thread_ts)
-            if self.workspaces is not None
-            else None
-        )
-        if review is None or worktree is None:
-            return _NO_PLAN_REVIEW
-        if time.monotonic() - review.started > _PLAN_REVIEW_TTL_SECONDS:
-            del self._plan_reviews[key]
-            return _NO_PLAN_REVIEW
-        try:
-            text = plan_path(worktree, review.area).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            del self._plan_reviews[key]
-            return _NO_PLAN_REVIEW
-        pending = [q for q in open_questions(text) if _question_key(q) not in review.held]
-        if answer.kind == "stop":
-            del self._plan_reviews[key]
-            left = len(open_questions(text))
-            return (
-                f"기획 검토를 중단했습니다. 열린 질문 {left}개가 남아 있습니다. "
-                f"`기획 확정 {review.area}`를 보내면 이어서 묻습니다."
-            )
-        if not pending:
-            return self._next_question(channel_id, thread_ts, worktree, review.area, text)
-        current = pending[0]
-        if answer.kind == "hold":
-            review.held.add(_question_key(current))
-            prefix = f"{current.number}를 보류했습니다.\n\n"
-            return self._next_question(channel_id, thread_ts, worktree, review.area, text, prefix)
-        if answer.kind == "all_recommended":
-            return self._record_all_recommended(channel_id, thread_ts, worktree, review, pending)
-        if answer.kind == "recommended" and recommended_decision(current) is None:
-            return (
-                f"{current.number}에는 추천이 없어 `추천대로`를 쓸 수 없습니다. "
-                "`결정: <내용>`으로 답하거나 `보류`해 주세요."
-            )
-        if answer.kind == "choice":
-            if not current.options:
-                return (
-                    f"{current.number}에는 선택지가 없습니다. `결정: <내용>`으로 답하거나 "
-                    "`보류`해 주세요."
-                )
-            number = int(answer.text)
-            if not 1 <= number <= len(current.options):
-                return f"{current.number}의 선택지는 1~{len(current.options)}번입니다."
-            decision: str | None = current.options[number - 1]
-        elif answer.kind == "recommended":
-            decision = recommended_decision(current)
-        else:
-            decision = answer.text
-        recorded = self._record_decision(worktree, review.area, text, current, decision or "")
-        if recorded.error is not None:
-            return recorded.error
-        prefix = f"✅ {current.number} 결정을 기록했습니다: {recorded.decision}\n\n"
-        return self._next_question(
-            channel_id, thread_ts, worktree, review.area, recorded.text, prefix
-        )
-
-    def _record_all_recommended(
-        self,
-        channel_id: str,
-        thread_ts: str,
-        worktree: Path,
-        review: _PlanReview,
-        pending: list[Question],
-    ) -> str:
-        missing = [q.number for q in pending if recommended_decision(q) is None]
-        if missing:
-            return (
-                f"{', '.join(missing)}에는 추천이 없어 `나머지 추천대로`를 쓸 수 없습니다. "
-                "`결정: <내용>`으로 답하거나 `보류`해 주세요."
-            )
-        numbers = [q.number for q in pending]
-        text = plan_path(worktree, review.area).read_text(encoding="utf-8")
-        for _ in numbers:
-            current = next(
-                q for q in open_questions(text) if _question_key(q) not in review.held
-            )
-            recorded = self._record_decision(
-                worktree, review.area, text, current, recommended_decision(current) or ""
-            )
-            if recorded.error is not None:
-                return recorded.error
-            text = recorded.text
-        prefix = f"✅ 남은 질문 {len(numbers)}개를 추천대로 기록했습니다: {', '.join(numbers)}\n\n"
-        return self._next_question(channel_id, thread_ts, worktree, review.area, text, prefix)
-
-    def _record_decision(
-        self, worktree: Path, area: str, text: str, question: Question, decision: str
-    ) -> _Recorded:
-        assert self.workspaces is not None
-        relative = f"docs/{area}/plan.md"
-        try:
-            updated = record_decision(text, question, decision)
-        except ValueError:
-            return _Recorded(
-                text, decision, f"결정은 1~{MAX_DECISION_CHARS}자(300자 이내)의 한 줄이어야 합니다."
-            )
-        try:
-            plan_path(worktree, area).write_text(updated, encoding="utf-8")
-            self.workspaces.commit(worktree, [relative], f"기획 결정: {area} {question.number}")
-        except (OSError, WorkspaceError):
-            return _Recorded(text, decision, f"❌ `{relative}`에 결정을 기록하지 못했습니다.")
-        return _Recorded(updated, " ".join(decision.split()))
-
-    def _next_question(
-        self,
-        channel_id: str,
-        thread_ts: str,
-        worktree: Path,
-        area: str,
-        text: str,
-        prefix: str = "",
-    ) -> str:
-        key = (channel_id, thread_ts)
-        review = self._plan_reviews.get(key)
-        held = review.held if review is not None else set()
-        open_now = open_questions(text)
-        pending = [q for q in open_now if _question_key(q) not in held]
-        if pending:
-            question = pending[0]
-            advice = (
-                f"추천: {question.recommendation}"
-                if question.recommendation
-                else "추천: 없음 — `결정: <내용>`으로 답해 주세요."
-            )
-            recommended = recommended_choice(question)
-            options = "".join(
-                f"{number}) {option}{' (추천)' if number == recommended else ''}\n"
-                for number, option in enumerate(question.options, start=1)
-            )
-            how = (
-                "번호만 보내면 됩니다. 그 밖의 답: "
-                if question.options
-                else "답하는 법: `추천대로` · "
-            ) + "`결정: <내용>` · `보류` · `나머지 추천대로` · `중단`"
-            return (
-                f"{prefix}📝 `docs/{area}/plan.md` 열린 질문 {len(open_now)}개 중 하나입니다.\n"
-                f"*{question.number}.* {question.text}\n{options}{advice}\n\n{how}"
-            )
-        self._plan_reviews.pop(key, None)
-        if open_now:
-            return (
-                f"{prefix}남은 질문 {len(open_now)}개가 모두 보류 상태입니다. 결정한 뒤 "
-                f"`기획 확정 {area}`를 다시 보내면 이어서 묻습니다."
-            )
-        return (
-            f"{prefix}모든 열린 질문이 정해졌습니다. `기획 확정 {area}`를 다시 보내면 "
-            "기획을 확정합니다."
-        )
+        return self._plan_reviews.answer_plan_review(channel_id, thread_ts, answer)
 
     def _discard(self, channel_id: str, thread_ts: str) -> str:
         none_message = "폐기할 작업 브랜치(worktree)가 없습니다."
@@ -1376,9 +1143,7 @@ class ExecutionWorkflow:
                 break
         return checks
 
-    def _set_code_work_state(
-        self, channel_id: str, thread_ts: str, state: CodeWorkState
-    ) -> None:
+    def _set_code_work_state(self, channel_id: str, thread_ts: str, state: CodeWorkState) -> None:
         self.code_work_state_store.set(
             channel_id=channel_id,
             thread_ts=thread_ts,

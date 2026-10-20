@@ -4235,7 +4235,7 @@ def test_a_review_expires_after_half_an_hour(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clock = [1000.0]
-    monkeypatch.setattr("src.code.workflow.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("src.code.plan_review.time.monotonic", lambda: clock[0])
     workflow, _, _ = _review_thread(tmp_path)
     workflow.confirm_plan("C1", "1.1", "linear")
     clock[0] += 31 * 60
