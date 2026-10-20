@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from src.code.agent import PlanResponseFormatError
+from src.code.autopilot import Autopilot
 from src.code.context import ProjectContext, ProjectContextLoader, SkillRegistry
 from src.code.direct_edit import DirectEditor
 from src.code.edit_scope import (
@@ -35,7 +36,6 @@ from src.code.markers import (
     is_plan_follow_work_request,
 )
 from src.code.plan import (
-    _UNCHECKED_ITEM,
     DEFAULT_MAX_AUTO_REPAIRS,
     DEFAULT_MAX_AUTOPILOT_ITEMS,
     ExecutionPlan,
@@ -48,16 +48,13 @@ from src.code.plan import (
     _repair_fingerprint,
     _validate_plan,
     _validate_repair_steps,
-    next_unchecked_item,
     render_plan_preview,
 )
 from src.code.plan_review import PlanReviewDialogue
 from src.code.tooluse import CommandResult, ProjectExecutionTools, VerificationStatus, _project_path
 from src.code.verifier import (
     ExecutionResult,
-    _diff_summary,
     _remaining_risks,
-    _render_check,
     _verification_fingerprint,
     render_execution_failure,
     render_execution_result,
@@ -176,10 +173,7 @@ class ExecutionWorkflow:
     ) -> None:
         self.workspaces = workspaces
         self.code_work_mode = code_work_mode
-        self.max_autopilot_items = max_autopilot_items
         self._plan_reviews = PlanReviewDialogue(workspaces)
-        self._autopilot_active: set[tuple[str, str]] = set()
-        self._autopilot_cancelled: set[tuple[str, str]] = set()
         self._last_results: dict[tuple[str, str], ExecutionResult] = {}
         self.project_resolver = project_resolver
         self.context_loader = context_loader or ProjectContextLoader(project_resolver)
@@ -187,6 +181,13 @@ class ExecutionWorkflow:
         self.plan_store = plan_store or PendingPlanStore()
         self.awaiting_project_store = awaiting_project_store or AwaitingProjectStore()
         self.code_work_state_store = code_work_state_store or CodeWorkStateStore()
+        self._autopilot = Autopilot(
+            project_resolver=project_resolver,
+            state_store=self.code_work_state_store,
+            last_results=self._last_results,
+            max_items=max_autopilot_items,
+            process=lambda **kwargs: self.process(**kwargs),
+        )
 
     def process(
         self,
@@ -204,8 +205,8 @@ class ExecutionWorkflow:
         if _CONFIRMATION.fullmatch(command_text):
             return self._execute_pending(channel_id, thread_ts, agent)
         if _CANCELLATION.fullmatch(command_text):
-            if (channel_id, thread_ts) in self._autopilot_active:
-                self._autopilot_cancelled.add((channel_id, thread_ts))
+            if self._autopilot.is_active(channel_id, thread_ts):
+                self._autopilot.cancel(channel_id, thread_ts)
                 return "⛔ 자동 진행 취소를 요청했습니다. 현재 항목이 끝나면 중단합니다."
             return self._cancel_pending(channel_id, thread_ts)
         if _DISCARD.fullmatch(command_text):
@@ -225,7 +226,7 @@ class ExecutionWorkflow:
         # code-work marker of its own and would otherwise be judged unrelated.
         awaiting_project = self.awaiting_project_store.has_pending(channel_id, thread_ts)
         autopilot = auto_execute or _is_autopilot_request(command_text)
-        if autopilot and not auto_execute and (channel_id, thread_ts) in self._autopilot_active:
+        if autopilot and not auto_execute and self._autopilot.is_active(channel_id, thread_ts):
             return (
                 "⏳ 이미 자동 진행 중입니다. 끝나면 결과를 알려드립니다. "
                 "중단하려면 `취소`라고 보내 주세요."
@@ -264,7 +265,7 @@ class ExecutionWorkflow:
             return "코드 작업할 대상 프로젝트명을 요청에 포함해 주세요."
         self.awaiting_project_store.clear(channel_id, thread_ts)
         if autopilot and not auto_execute:
-            return self._run_autopilot(
+            return self._autopilot.run(
                 project_name, channel_id, thread_ts, thread_context, agent, on_progress
             )
         edit_root = None if autopilot else self._direct_edit_root(agent, project_name)
@@ -512,80 +513,6 @@ class ExecutionWorkflow:
         if self.workspaces is not None and not self.workspaces.can_isolate(detailed_context.root):
             preview += f"\n⚠️ {_NO_ROLLBACK_WARNING}"
         return preview
-
-    def _run_autopilot(
-        self,
-        project_name: str,
-        channel_id: str,
-        thread_ts: str,
-        thread_context: ThreadContextStore,
-        agent: object,
-        on_progress: Callable[[str], None] | None = None,
-    ) -> str | None:
-        """Plan and execute every unchecked plan.md item without confirmation,
-        checking each off only after its verification succeeded."""
-        key = (channel_id, thread_ts)
-        self._autopilot_active.add(key)
-        try:
-            return self._autopilot_loop(project_name, key, thread_context, agent, on_progress)
-        finally:
-            self._autopilot_active.discard(key)
-            self._autopilot_cancelled.discard(key)
-
-    def _autopilot_loop(
-        self,
-        project_name: str,
-        key: tuple[str, str],
-        thread_context: ThreadContextStore,
-        agent: object,
-        on_progress: Callable[[str], None] | None,
-    ) -> str | None:
-        channel_id, thread_ts = key
-        plan_file = self.project_resolver.resolve(project_name) / "plan.md"
-        total = len(_UNCHECKED_ITEM.findall(plan_file.read_text()))
-        result: str | None = None
-        completed = 0
-        summary_lines: list[str] = []
-        all_diffs: list[str] = []
-        while (item := next_unchecked_item(plan_file.read_text())) is not None:
-            if completed >= self.max_autopilot_items:
-                remaining = len(_UNCHECKED_ITEM.findall(plan_file.read_text()))
-                return (
-                    f"⛔ 자동 진행 중단: 최대 {self.max_autopilot_items}개 항목까지만 "
-                    f"진행합니다 ({completed}개 완료, 남은 항목 {remaining}개)\n{result}"
-                )
-            result = self.process(
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-                text=f"{project_name} plan.md 기준으로 다음 항목을 진행해: {item}",
-                thread_context=thread_context,
-                agent=agent,
-                auto_execute=True,
-            )
-            state = self.code_work_state_store.state(channel_id=channel_id, thread_ts=thread_ts)
-            if state is not CodeWorkState.SUCCEEDED:
-                return f"⛔ 자동 진행 중단 ({completed}개 완료): `{item}` 실패\n{result}"
-            plan_file.write_text(plan_file.read_text().replace(f"- [ ] {item}", f"- [x] {item}", 1))
-            completed += 1
-            finished = self._last_results.get(key)
-            files = ", ".join(
-                f"`{path}`" for path in dict.fromkeys(finished.changed_files if finished else [])
-            )
-            unverified = " (검증 없음)" if finished is None or not finished.checks else ""
-            summary_lines.append(f"- ✅ {item}: {files}{unverified}")
-            if finished is not None:
-                all_diffs.extend(finished.diffs)
-                summary_lines.extend(f"  {_render_check(check)}" for check in finished.checks)
-            if on_progress is not None:
-                on_progress(f"🔄 자동 진행 {completed}/{total} 완료")
-            if key in self._autopilot_cancelled:
-                remaining = len(_UNCHECKED_ITEM.findall(plan_file.read_text()))
-                return f"⛔ 자동 진행 취소 ({completed}개 완료, 남은 항목 {remaining}개)\n{result}"
-        return (
-            f"✅ 전체 완료 ({completed}/{total}개 항목)\n"
-            + "\n".join(summary_lines)
-            + f"\nDiff 요약: {_diff_summary(all_diffs)}"
-        )
 
     def has_pending(self, channel_id: str, thread_ts: str) -> bool:
         return self.plan_store.has_pending(channel_id, thread_ts)
