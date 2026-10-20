@@ -21,6 +21,7 @@ from src.code.context import AppliedSkill, ProjectContext, ProjectContextLoader,
 from src.code.direct_edit import DirectEditor
 from src.code.edit_scope import (
     PATH_IN_REQUEST,
+    PlanRequest,
     drop_unauthorized_protected_steps,
     interpret_plan_request,
 )
@@ -74,6 +75,9 @@ logger = logging.getLogger(__name__)
 
 
 _SLACK_MENTION = re.compile(r"<@[^>]+>")
+
+
+_AMBIGUOUS_PROJECT = "같은 Git 저장소 이름의 로컬 프로젝트가 여러 개입니다. 폴더명을 지정해 주세요."
 
 
 _CONFIRMATION = re.compile(r"^(실행|실행해줘|실행합니다)$")
@@ -280,6 +284,68 @@ class ExecutionWorkflow:
         self.awaiting_project_store.clear(channel_id, thread_ts)
         return project_name, None
 
+    def _investigate(
+        self,
+        agent: object,
+        channel_id: str,
+        thread_ts: str,
+        contextual_text: str,
+        request: PlanRequest,
+    ) -> tuple[list[str], list[str], str | None]:
+        """What the agent's read-only investigation found: the source files it read, the
+        planning target paths including them, and a reply when planning cannot go on."""
+        investigator = getattr(agent, "analyze", None)
+        # An explicitly named file is already a bounded, first-party source
+        # for the planner. Do not make a plan-file creation/edit request fail
+        # merely because the optional exploratory LLM chose not to read it.
+        target_paths = list(request.target_paths)
+        source_paths: list[str] = []
+        # A directly named file normally supplies bounded planning context.
+        # Following an existing plan is different: the plan is specification,
+        # not implementation evidence, so related source and test files must
+        # still be investigated before the model can propose a code change.
+        investigate_code = any(
+            _is_source_or_test_path(path) for path in request.explicit_target_paths
+        )
+        if callable(investigator) and (
+            not request.explicit_target_paths or request.plan_follow_request or investigate_code
+        ):
+            try:
+                investigation = investigator(
+                    contextual_text, channel_id=channel_id, thread_ts=thread_ts
+                )
+            except AmbiguousProject:
+                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+                return [], target_paths, _AMBIGUOUS_PROJECT
+            except (InvalidProjectName, UnknownProject):
+                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+                return [], target_paths, "대상 프로젝트를 찾을 수 없습니다."
+            source_paths = [
+                source
+                for source in getattr(investigation, "sources", [])
+                if isinstance(source, str)
+            ]
+            if not source_paths and not request.plan_document_is_evidence:
+                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+                scope = (
+                    getattr(investigation, "summary", "") or "관련 파일을 찾지 못했습니다"
+                ).rstrip(".")
+                ask = "관련 모듈명 또는 파일을 지정해 주세요."
+                tail = "" if "지정해" in scope else f" {ask}"
+                return (
+                    [],
+                    target_paths,
+                    (
+                        f"`src/`·`tests/`에서 코드 근거를 찾지 못해 실행 계획을 만들 수 없습니다. "
+                        f"탐색 결과: {scope}.{tail}"
+                    ),
+                )
+            # Preserve an explicitly named target first, then add only actual
+            # files the investigator read. `_read_existing_files` and the
+            # context loader validate each path against the project boundary.
+            target_paths = list(dict.fromkeys([*target_paths, *source_paths]))
+        return source_paths, target_paths, None
+
     def _plan_and_preview(
         self,
         *,
@@ -310,57 +376,16 @@ class ExecutionWorkflow:
         )
 
         request = interpret_plan_request(command_text, contextual_text)
-        explicit_target_paths = request.explicit_target_paths
         target_paths = request.target_paths
         plan_follow_request = request.plan_follow_request
         plan_document_is_evidence = request.plan_document_is_evidence
         linear_plan_document = request.linear_plan_document
         user_writable_paths = request.user_writable_paths
-        investigator = getattr(agent, "analyze", None)
-        # An explicitly named file is already a bounded, first-party source
-        # for the planner. Do not make a plan-file creation/edit request fail
-        # merely because the optional exploratory LLM chose not to read it.
-        source_paths: list[str] = []
-        # A directly named file normally supplies bounded planning context.
-        # Following an existing plan is different: the plan is specification,
-        # not implementation evidence, so related source and test files must
-        # still be investigated before the model can propose a code change.
-        investigate_code = any(_is_source_or_test_path(path) for path in explicit_target_paths)
-        if callable(investigator) and (
-            not explicit_target_paths or plan_follow_request or investigate_code
-        ):
-            try:
-                investigation = investigator(
-                    contextual_text, channel_id=channel_id, thread_ts=thread_ts
-                )
-            except AmbiguousProject:
-                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
-                return (
-                    "같은 Git 저장소 이름의 로컬 프로젝트가 여러 개입니다. 폴더명을 지정해 주세요."
-                )
-            except (InvalidProjectName, UnknownProject):
-                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
-                return "대상 프로젝트를 찾을 수 없습니다."
-            source_paths = [
-                source
-                for source in getattr(investigation, "sources", [])
-                if isinstance(source, str)
-            ]
-            if not source_paths and not plan_document_is_evidence:
-                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
-                scope = (
-                    getattr(investigation, "summary", "") or "관련 파일을 찾지 못했습니다"
-                ).rstrip(".")
-                ask = "관련 모듈명 또는 파일을 지정해 주세요."
-                tail = "" if "지정해" in scope else f" {ask}"
-                return (
-                    f"`src/`·`tests/`에서 코드 근거를 찾지 못해 실행 계획을 만들 수 없습니다. "
-                    f"탐색 결과: {scope}.{tail}"
-                )
-            # Preserve an explicitly named target first, then add only actual
-            # files the investigator read. `_read_existing_files` and the
-            # context loader validate each path against the project boundary.
-            target_paths = list(dict.fromkeys([*target_paths, *source_paths]))
+        source_paths, target_paths, investigation_reply = self._investigate(
+            agent, channel_id, thread_ts, contextual_text, request
+        )
+        if investigation_reply is not None:
+            return investigation_reply
         try:
             if linear_plan_document:
                 project_root = self.project_resolver.resolve(project_name)
@@ -413,7 +438,7 @@ class ExecutionWorkflow:
             )
         except AmbiguousProject:
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
-            return "같은 Git 저장소 이름의 로컬 프로젝트가 여러 개입니다. 폴더명을 지정해 주세요."
+            return _AMBIGUOUS_PROJECT
         except (InvalidProjectName, UnknownProject):
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return "대상 프로젝트를 찾을 수 없습니다."
