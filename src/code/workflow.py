@@ -17,7 +17,7 @@ from pathlib import Path
 
 from src.code.agent import PlanResponseFormatError
 from src.code.autopilot import Autopilot
-from src.code.context import ProjectContextLoader, SkillRegistry
+from src.code.context import AppliedSkill, ProjectContext, ProjectContextLoader, SkillRegistry
 from src.code.direct_edit import DirectEditor
 from src.code.edit_scope import (
     PATH_IN_REQUEST,
@@ -432,6 +432,36 @@ class ExecutionWorkflow:
             logger.exception("execution_plan_failed project=%s", project_name)
             self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
             return f"실행 계획 생성에 실패했습니다: {exc}"
+
+        return self._store_and_preview(
+            agent=agent,
+            plan=plan,
+            project_name=project_name,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            command_text=command_text,
+            detailed_context=detailed_context,
+            skills=skills,
+            existing_files=existing_files,
+            autopilot=autopilot,
+        )
+
+    def _store_and_preview(
+        self,
+        *,
+        agent: object,
+        plan: ExecutionPlan,
+        project_name: str,
+        channel_id: str,
+        thread_ts: str,
+        command_text: str,
+        detailed_context: ProjectContext,
+        skills: list[AppliedSkill],
+        existing_files: list[ExistingFile],
+        autopilot: bool,
+    ) -> str:
+        """Record what was applied to the plan, then run it (autopilot) or store it as the
+        thread's pending plan and return the preview to confirm."""
 
         if not (detailed_context.root / "pyproject.toml").exists():
             # The fixed checks are Python tooling; on any other stack they would
