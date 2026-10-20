@@ -13,13 +13,22 @@ import logging
 import re
 import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from src.code.agent import AnalysisAgentError, PlanResponseFormatError
 from src.code.context import ProjectContext, ProjectContextLoader, SkillRegistry
+from src.code.edit_scope import (
+    PATH_IN_REQUEST,
+    PlanFirstLimits,
+    area_plan_for_named_plan,
+    edit_applied_guidance,
+    edit_named_paths_in_thread,
+    is_plan_follow_request,
+    plan_first_limits,
+)
 from src.code.executor import AwaitingProjectStore, PendingPlanStatus, PendingPlanStore
 from src.code.markers import (
     CODE_INTEGRATION_MARKERS,
@@ -63,20 +72,13 @@ from src.code.verifier import (
 from src.code.workspace import ThreadWorkspaces, WorkspaceError
 from src.core.harness import load_file
 from src.core.plan_first import (
-    CONFIRMED,
     PlanAnswer,
-    detect_area,
-    plan_first_enabled,
-    plan_path,
-    plan_status,
-    wants_bypass,
 )
 from src.core.plan_guard import (
     is_protected_meta_path,
     is_risky_path,
     is_secret_path,
 )
-from src.core.project_guidance import guidance_files
 from src.core.project_resolver import (
     AmbiguousProject,
     InvalidProjectName,
@@ -85,7 +87,6 @@ from src.core.project_resolver import (
 )
 from src.core.read_only import wants_read_only
 from src.core.run_state import CodeWorkState, CodeWorkStateStore
-from src.core.skill_allowlist import claude_skill_names
 from src.slack.request_classifier import classify_request, find_project_name_candidates
 from src.slack.request_router import RequestIntent, RequestRouter
 from src.slack.thread_context import ThreadContextStore
@@ -114,9 +115,6 @@ _MAX_ANSWER_CHARS = 3500  # stays under Slack's message length limit
 _MAX_AGENT_REPORT_CHARS = 1500  # the agent's own summary beside the diffs
 
 
-_PATH_IN_REQUEST = re.compile(r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?=$|[\s,.:!?…]|[은는이가을를에의])")
-
-
 # ExecutionWorkflow's plan-building gate intentionally uses narrower test
 # phrasing than RequestRouter's CODE_MARKERS (bare "테스트"/"test"/"코드" are
 # excluded here) — a pre-existing behavior this shared-vocabulary refactor
@@ -143,52 +141,6 @@ def _with_thread_ids(
     if "channel_id" not in inspect.signature(func).parameters:
         return func
     return partial(func, channel_id=channel_id, thread_ts=thread_ts)
-
-
-def _edit_named_paths(command_text: str) -> list[str]:
-    """Files the user named in this message, which the edit agent may touch even if they are
-    management or code-executing files; a plan-authoring request names plan.md."""
-    follow = _is_plan_follow_request(command_text)
-    named = [
-        path
-        for path in _PATH_IN_REQUEST.findall(command_text)
-        if not (follow and is_protected_meta_path(path))
-    ]
-    if not follow and any(marker in command_text.casefold() for marker in PLAN_AUTHORING_MARKERS):
-        named.append("plan.md")
-    return list(dict.fromkeys(named))
-
-
-def _edit_named_paths_in_thread(
-    command_text: str, earlier_user_messages: Sequence[str]
-) -> list[str]:
-    """`_edit_named_paths` plus the management files (`plan.md`, ...) the user themself named
-    in earlier messages of this thread, so a follow-up without a file name keeps them
-    editable. Only the user's own words count — never bot replies or data the bot read —
-    and a plan-follow request keeps `plan.md` read-only whatever was said before."""
-    named = _edit_named_paths(command_text)
-    if _is_plan_follow_request(command_text):
-        return named
-    earlier = [
-        path
-        for message in earlier_user_messages
-        for path in _edit_named_paths(message)
-        if is_protected_meta_path(path)
-    ]
-    return list(dict.fromkeys([*named, *earlier]))
-
-
-def _area_plan_for_named_plan(
-    worktree: Path, named: frozenset[str], messages: Sequence[str]
-) -> frozenset[str]:
-    """A bare `plan.md` in an area's conversation (`linear plan.md 수정해`) means that area's
-    plan, which lives at `docs/<영역>/plan.md`. Without a detected area nothing is added."""
-    if "plan.md" not in named:
-        return frozenset()
-    area = detect_area(messages)
-    if area is None or not plan_path(worktree, area).is_file():
-        return frozenset()
-    return frozenset({f"docs/{area}/plan.md"})
 
 
 def _is_guarded_path(path: str) -> bool:
@@ -282,7 +234,7 @@ class ExecutionWorkflow:
         # different file alone — no modification verb required. Without a
         # pending plan, a bare file mention still isn't an execution request.
         has_pending_plan = self.plan_store.has_pending(channel_id, thread_ts)
-        redirect_with_pending_plan = has_pending_plan and _PATH_IN_REQUEST.search(command_text)
+        redirect_with_pending_plan = has_pending_plan and PATH_IN_REQUEST.search(command_text)
         # A stalled request awaiting only a project name resumes on the very
         # next message — that reply (e.g. just a bare project name) has no
         # code-work marker of its own and would otherwise be judged unrelated.
@@ -361,10 +313,10 @@ class ExecutionWorkflow:
         # A file named in this exact message always wins — it's what the user
         # just said, e.g. redirecting a pending plan to a different file. Only
         # fall back to thread context when this message names nothing at all.
-        explicit_target_paths = _PATH_IN_REQUEST.findall(command_text)
-        target_paths = explicit_target_paths or _PATH_IN_REQUEST.findall(contextual_text)
-        plan_follow_request = _is_plan_follow_request(command_text) or (
-            not explicit_target_paths and _is_plan_follow_request(contextual_text)
+        explicit_target_paths = PATH_IN_REQUEST.findall(command_text)
+        target_paths = explicit_target_paths or PATH_IN_REQUEST.findall(contextual_text)
+        plan_follow_request = is_plan_follow_request(command_text) or (
+            not explicit_target_paths and is_plan_follow_request(contextual_text)
         )
         # plan.md is already loaded into planning context via `target_paths`
         # below, so when it's the thing being followed, its own content is
@@ -726,7 +678,7 @@ class ExecutionWorkflow:
         assert self.workspaces is not None
         workspaces = self.workspaces
         edit = getattr(agent, "edit_code")  # noqa: B009 - checked by _direct_edit_root
-        named = frozenset(_edit_named_paths_in_thread(command_text, earlier_user_messages))
+        named = frozenset(edit_named_paths_in_thread(command_text, earlier_user_messages))
         self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IMPLEMENTING)
         try:
             worktree = workspaces.ensure(root, project_name, channel_id, thread_ts)
@@ -739,13 +691,13 @@ class ExecutionWorkflow:
 
         # A message that forbids edits wins over every stage: nothing is writable this run.
         plan_limits = (
-            _PlanFirstLimits(write_roots=(), stage="readonly")
+            PlanFirstLimits(write_roots=(), stage="readonly")
             if wants_read_only(command_text)
-            else _plan_first_limits(worktree, command_text, earlier_user_messages)
+            else plan_first_limits(worktree, command_text, earlier_user_messages)
         )
         write_roots = plan_limits.write_roots
         named = named | plan_limits.named
-        named = named | _area_plan_for_named_plan(
+        named = named | area_plan_for_named_plan(
             worktree, named, [*earlier_user_messages, command_text]
         )
         plan_first = plan_limits.stage is not None
@@ -797,7 +749,7 @@ class ExecutionWorkflow:
                 or "코드 에이전트가 파일을 변경하지 않았고 답변도 비어 있습니다."
             )
 
-        applied_agents, applied_skills = _edit_applied_guidance(worktree)
+        applied_agents, applied_skills = edit_applied_guidance(worktree)
         plan = ExecutionPlan(
             goal=goal,
             project_name=project_name,
@@ -1168,72 +1120,11 @@ class ExecutionWorkflow:
             )
 
 
-@dataclass(frozen=True)
-class _PlanFirstLimits:
-    write_roots: tuple[str, ...] | None = None
-    named: frozenset[str] = frozenset()
-    stage: str | None = None
-    area: str | None = None
-
-
-def _plan_first_limits(
-    worktree: Path, command_text: str, earlier_user_messages: Sequence[str]
-) -> _PlanFirstLimits:
-    """What a plan-first project allows this run to write (plan.md Phase 28): `docs/` only,
-    plus the one area plan the user's words point at, until that plan is confirmed. A project
-    that did not opt in is not limited and gets no stage."""
-    if not plan_first_enabled(worktree):
-        return _PlanFirstLimits()
-    area = detect_area([*earlier_user_messages, command_text])
-    if wants_bypass(command_text):
-        # Only this message counts: an earlier "기획 없이" does not carry over to later ones.
-        return _PlanFirstLimits(stage="bypassed", area=area)
-    if area is not None and plan_status(worktree, area) == CONFIRMED:
-        return _PlanFirstLimits(stage="developing", area=area)
-    named = frozenset({f"docs/{area}/plan.md"}) if area is not None else frozenset()
-    return _PlanFirstLimits(("docs/",), named, "planning", area)
-
-
-def _edit_applied_guidance(worktree: Path) -> tuple[list[str], list[str]]:
-    """What the Claude edit run was actually given: the guidance files handed over in the
-    prompt (CLAUDE.md is not read) and the allowlisted project skills."""
-
-    def is_plain_file(path: Path) -> bool:
-        return path.is_file() and not path.is_symlink()
-
-    agents = guidance_files(worktree)
-    skills = [
-        f"claude:{name}"
-        for name in claude_skill_names(worktree)
-        if is_plain_file(worktree / ".claude" / "skills" / name / "SKILL.md")
-    ]
-    return agents, skills
-
-
 def _is_execution_request(text: str) -> bool:
     normalized = text.casefold()
     return is_plan_follow_work_request(normalized) or any(
         marker in normalized for marker in _EXECUTION_MARKERS
     )
-
-
-# Korean postpositions that mean "based on / according to / following" plan.md
-# — whichever verb comes after them ("구현해줘", "진행해줘", "작업해줘", ...) is
-# unbounded and not worth enumerating, but this small, closed set of relational
-# particles is what actually signals "plan.md is a spec to implement" versus
-# "plan.md is the thing being written to" (e.g. "plan.md 수정해줘", "plan.md에
-# 계획 짜볼래?", both left unprotected, matching direct-edit requests).
-_PLAN_REFERENCE_MARKERS = ("대로", "기준으로", "보고", "따라", "맞춰", "확인 후", "확인하고")
-
-
-def _is_plan_follow_request(text: str) -> bool:
-    """plan.md referenced with a "following/based on" postposition is a
-    read-only spec to implement in code, not a write target — independent of
-    which verb names the implementation work."""
-    normalized = text.casefold()
-    if "plan.md" not in normalized:
-        return False
-    return any(marker in normalized for marker in _PLAN_REFERENCE_MARKERS)
 
 
 def _is_autopilot_request(text: str) -> bool:
