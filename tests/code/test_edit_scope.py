@@ -37,7 +37,9 @@ def test_the_thread_context_names_the_target_when_this_message_names_none() -> N
 
 
 def test_following_plan_md_reads_it_as_evidence_but_does_not_make_it_writable() -> None:
-    request = interpret_plan_request("plan.md 대로 src/a.py 구현해줘", "plan.md 대로 src/a.py 구현해줘")
+    request = interpret_plan_request(
+        "plan.md 대로 src/a.py 구현해줘", "plan.md 대로 src/a.py 구현해줘"
+    )
 
     assert request.plan_follow_request
     assert request.plan_document_is_evidence
