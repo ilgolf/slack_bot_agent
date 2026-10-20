@@ -224,25 +224,11 @@ class ExecutionWorkflow:
         contextual_text = self._with_thread_context(
             channel_id, thread_ts, command_text, thread_context
         )
-        # An explicit project name in this exact message always wins. Only
-        # when this message names none do we fall back to thread history —
-        # and only then can more than one prior project create real
-        # ambiguity worth asking about instead of silently guessing.
-        explicit_project_name = self._project_name(command_text)
-        if explicit_project_name is None:
-            candidates = find_project_name_candidates(contextual_text, self.project_resolver)
-            if len(candidates) > 1:
-                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
-                candidate_list = ", ".join(f"`{name}`" for name in candidates)
-                return (
-                    "스레드에 여러 프로젝트가 섞여 있어 대상을 정하지 못했습니다: "
-                    f"{candidate_list}. 진행할 프로젝트명을 알려주세요."
-                )
-        project_name = explicit_project_name or self._project_name(contextual_text)
+        project_name, project_reply = self._target_project(
+            channel_id, thread_ts, command_text, contextual_text
+        )
         if project_name is None:
-            self.awaiting_project_store.mark(channel_id, thread_ts)
-            return "코드 작업할 대상 프로젝트명을 요청에 포함해 주세요."
-        self.awaiting_project_store.clear(channel_id, thread_ts)
+            return project_reply
         if autopilot and not auto_execute:
             return self._autopilot.run(
                 project_name, channel_id, thread_ts, thread_context, agent, on_progress
@@ -268,6 +254,31 @@ class ExecutionWorkflow:
             contextual_text=contextual_text,
             autopilot=autopilot,
         )
+
+    def _target_project(
+        self, channel_id: str, thread_ts: str, command_text: str, contextual_text: str
+    ) -> tuple[str | None, str | None]:
+        """The project this request is about, or `None` plus the reply that asks for it."""
+        # An explicit project name in this exact message always wins. Only
+        # when this message names none do we fall back to thread history —
+        # and only then can more than one prior project create real
+        # ambiguity worth asking about instead of silently guessing.
+        explicit_project_name = self._project_name(command_text)
+        if explicit_project_name is None:
+            candidates = find_project_name_candidates(contextual_text, self.project_resolver)
+            if len(candidates) > 1:
+                self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
+                candidate_list = ", ".join(f"`{name}`" for name in candidates)
+                return None, (
+                    "스레드에 여러 프로젝트가 섞여 있어 대상을 정하지 못했습니다: "
+                    f"{candidate_list}. 진행할 프로젝트명을 알려주세요."
+                )
+        project_name = explicit_project_name or self._project_name(contextual_text)
+        if project_name is None:
+            self.awaiting_project_store.mark(channel_id, thread_ts)
+            return None, "코드 작업할 대상 프로젝트명을 요청에 포함해 주세요."
+        self.awaiting_project_store.clear(channel_id, thread_ts)
+        return project_name, None
 
     def _plan_and_preview(
         self,
