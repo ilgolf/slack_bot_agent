@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from src.code.markers import PLAN_AUTHORING_MARKERS
+from src.code.plan import ExecutionPlan
 from src.core.plan_first import (
     CONFIRMED,
     detect_area,
@@ -197,3 +198,29 @@ def interpret_plan_request(command_text: str, contextual_text: str) -> PlanReque
         linear_plan_document=linear_plan_document,
         user_writable_paths=user_writable_paths,
     )
+
+
+def drop_unauthorized_protected_steps(
+    plan: ExecutionPlan, user_writable_paths: Sequence[str]
+) -> ExecutionPlan:
+    """A model that includes a protected file alongside real changes (e.g. wanting to note
+    progress in plan.md) shouldn't kill an otherwise-valid plan: drop the unauthorized step
+    and keep the rest. `_validate_plan` still guards anything this misses."""
+    unauthorized = {
+        path
+        for path in plan.affected_files
+        if is_protected_meta_path(path) and path not in user_writable_paths
+    }
+    if not unauthorized:
+        return plan
+    kept = replace(
+        plan,
+        affected_files=[path for path in plan.affected_files if path not in unauthorized],
+        steps=[step for step in plan.steps if step.path not in unauthorized],
+    )
+    if not kept.steps:
+        dropped = ", ".join(f"`{path}`" for path in sorted(unauthorized))
+        raise ValueError(
+            f"제안된 변경이 프로젝트 관리 파일뿐이라 실행 계획을 만들지 못했습니다: {dropped}"
+        )
+    return kept

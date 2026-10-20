@@ -21,6 +21,7 @@ from src.code.context import ProjectContextLoader, SkillRegistry
 from src.code.direct_edit import DirectEditor
 from src.code.edit_scope import (
     PATH_IN_REQUEST,
+    drop_unauthorized_protected_steps,
     interpret_plan_request,
 )
 from src.code.executor import AwaitingProjectStore, PendingPlanStatus, PendingPlanStore
@@ -393,35 +394,7 @@ class ExecutionWorkflow:
                     raise ValueError(
                         f"계획이 내용을 보지 못한 기존 파일을 수정하려 합니다: {listed}"
                     )
-            # A model that includes a protected file alongside real changes
-            # (e.g. wanting to note progress in plan.md) shouldn't kill an
-            # otherwise-valid plan — drop the unauthorized step and keep the
-            # rest. `_validate_plan` still guards anything this misses.
-            unauthorized_protected_paths = {
-                path
-                for path in plan.affected_files
-                if is_protected_meta_path(path) and path not in user_writable_paths
-            }
-            if unauthorized_protected_paths:
-                plan = replace(
-                    plan,
-                    affected_files=[
-                        path
-                        for path in plan.affected_files
-                        if path not in unauthorized_protected_paths
-                    ],
-                    steps=[
-                        step for step in plan.steps if step.path not in unauthorized_protected_paths
-                    ],
-                )
-                if not plan.steps:
-                    dropped = ", ".join(
-                        f"`{path}`" for path in sorted(unauthorized_protected_paths)
-                    )
-                    raise ValueError(
-                        "제안된 변경이 프로젝트 관리 파일뿐이라 실행 계획을 만들지 못했습니다: "
-                        f"{dropped}"
-                    )
+            plan = drop_unauthorized_protected_steps(plan, user_writable_paths)
             _validate_plan(
                 plan,
                 project_name,
