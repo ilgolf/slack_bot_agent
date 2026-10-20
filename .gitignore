@@ -26,3 +26,8 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# omx runtime output (plans/ stays tracked)
+/.omx/logs/
+/.omx/state/
+/.omx/metrics.json
