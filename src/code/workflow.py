@@ -8,19 +8,16 @@ skills are context for planning only; neither can relax these checks.
 
 from __future__ import annotations
 
-import inspect
 import logging
 import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import replace
-from functools import partial
 from pathlib import Path
-from typing import Any
 
 from src.code.agent import PlanResponseFormatError
 from src.code.autopilot import Autopilot
-from src.code.context import ProjectContext, ProjectContextLoader, SkillRegistry
+from src.code.context import ProjectContextLoader, SkillRegistry
 from src.code.direct_edit import DirectEditor
 from src.code.edit_scope import (
     PATH_IN_REQUEST,
@@ -36,7 +33,6 @@ from src.code.markers import (
     is_plan_follow_work_request,
 )
 from src.code.plan import (
-    DEFAULT_MAX_AUTO_REPAIRS,
     DEFAULT_MAX_AUTOPILOT_ITEMS,
     ExecutionPlan,
     ExistingFile,
@@ -45,19 +41,14 @@ from src.code.plan import (
     _linear_planning_sources,
     _preview_diffs,
     _read_existing_files,
-    _repair_fingerprint,
     _validate_plan,
-    _validate_repair_steps,
     render_plan_preview,
 )
+from src.code.plan_execution import NO_ROLLBACK_WARNING, PlanExecutor, with_thread_ids
 from src.code.plan_review import PlanReviewDialogue
 from src.code.tooluse import CommandResult, ProjectExecutionTools, VerificationStatus, _project_path
 from src.code.verifier import (
     ExecutionResult,
-    _remaining_risks,
-    _verification_fingerprint,
-    render_execution_failure,
-    render_execution_result,
 )
 from src.code.workspace import ThreadWorkspaces, WorkspaceError
 from src.core.plan_first import (
@@ -94,9 +85,6 @@ _CANCELLATION = re.compile(r"^(취소|취소해줘|취소합니다)$")
 _DISCARD = re.compile(r"^(폐기|폐기해줘|폐기합니다)$")
 
 
-_NO_ROLLBACK_WARNING = "롤백 불가: 이 프로젝트는 worktree로 격리할 수 없어 원본에 직접 적용됩니다."
-
-
 # ExecutionWorkflow's plan-building gate intentionally uses narrower test
 # phrasing than RequestRouter's CODE_MARKERS (bare "테스트"/"test"/"코드" are
 # excluded here) — a pre-existing behavior this shared-vocabulary refactor
@@ -114,15 +102,6 @@ _EXECUTION_MARKERS = (
     + CODE_INTEGRATION_MARKERS
     + PLAN_CONTINUATION_MARKERS
 )
-
-
-def _with_thread_ids(
-    func: Callable[..., Any], channel_id: str, thread_ts: str
-) -> Callable[..., Any]:
-    """Pass the Slack thread to agents that trace per thread; others are unchanged."""
-    if "channel_id" not in inspect.signature(func).parameters:
-        return func
-    return partial(func, channel_id=channel_id, thread_ts=thread_ts)
 
 
 def _is_guarded_path(path: str) -> bool:
@@ -203,7 +182,7 @@ class ExecutionWorkflow:
     ) -> str | None:
         command_text = _SLACK_MENTION.sub("", text).strip()
         if _CONFIRMATION.fullmatch(command_text):
-            return self._execute_pending(channel_id, thread_ts, agent)
+            return self._plan_executor().execute(channel_id, thread_ts, agent)
         if _CANCELLATION.fullmatch(command_text):
             if self._autopilot.is_active(channel_id, thread_ts):
                 self._autopilot.cancel(channel_id, thread_ts)
@@ -283,7 +262,7 @@ class ExecutionWorkflow:
         creator = getattr(agent, "create_execution_plan", None)
         if not callable(creator):
             return "코드 실행 계획에는 LLM 코드 에이전트가 필요합니다."
-        creator = _with_thread_ids(creator, channel_id, thread_ts)
+        creator = with_thread_ids(creator, channel_id, thread_ts)
         # Later plans in a thread build on its worktree, not on the original checkout.
         workspace_root = (
             self.workspaces.existing(project_name, channel_id, thread_ts)
@@ -491,7 +470,7 @@ class ExecutionWorkflow:
         )
         self.plan_store.put(channel_id, thread_ts, plan, request=command_text)
         if autopilot:
-            return self._execute_pending(channel_id, thread_ts, agent, isolate=False)
+            return self._plan_executor().execute(channel_id, thread_ts, agent, isolate=False)
         self.code_work_state_store.set(
             channel_id=channel_id,
             thread_ts=thread_ts,
@@ -511,7 +490,7 @@ class ExecutionWorkflow:
             plan, detailed_context.git, diffs, evidence_paths=evidence_paths
         )
         if self.workspaces is not None and not self.workspaces.can_isolate(detailed_context.root):
-            preview += f"\n⚠️ {_NO_ROLLBACK_WARNING}"
+            preview += f"\n⚠️ {NO_ROLLBACK_WARNING}"
         return preview
 
     def has_pending(self, channel_id: str, thread_ts: str) -> bool:
@@ -561,6 +540,17 @@ class ExecutionWorkflow:
             return "보류된 실행 계획이 만료되었습니다. 파일은 변경하지 않았습니다."
         return None
 
+    def _plan_executor(self) -> PlanExecutor:
+        return PlanExecutor(
+            plan_store=self.plan_store,
+            context_loader=self.context_loader,
+            workspaces=self.workspaces,
+            set_state=self._set_code_work_state,
+            run_verifications=self._run_verifications,
+            last_results=self._last_results,
+            record_trace=self._record_execution_trace,
+        )
+
     def _direct_editor(self) -> DirectEditor:
         assert self.workspaces is not None
         return DirectEditor(
@@ -609,168 +599,6 @@ class ExecutionWorkflow:
             "🗑️ 이 스레드의 작업 브랜치와 worktree를 폐기했습니다. "
             "원본 체크아웃은 변경하지 않았습니다."
         )
-
-    def _prepare_workspace(
-        self, context: ProjectContext, plan: ExecutionPlan, channel_id: str, thread_ts: str
-    ) -> tuple[Path | None, str | None]:
-        """The thread worktree to write in, or `None` plus a warning when the project
-        cannot be isolated."""
-        assert self.workspaces is not None
-        if not self.workspaces.can_isolate(context.root):
-            return None, _NO_ROLLBACK_WARNING
-        if self.workspaces.existing(plan.project_name, channel_id, thread_ts) is None:
-            # A fresh worktree starts from HEAD, so uncommitted edits to approved files
-            # in the original would be silently dropped or overwritten.
-            self.workspaces.check_clean(context.root, plan.affected_files)
-        path = self.workspaces.ensure(context.root, plan.project_name, channel_id, thread_ts)
-        return path, (None if path else _NO_ROLLBACK_WARNING)
-
-    def _execute_pending(
-        self, channel_id: str, thread_ts: str, agent: object, *, isolate: bool = True
-    ) -> str:
-        status, pending = self.plan_store.take(channel_id, thread_ts)
-        if status is PendingPlanStatus.EXPIRED:
-            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
-            return "보류된 실행 계획이 만료되었습니다. 새로 계획을 만들어 주세요."
-        if status is PendingPlanStatus.MISSING or pending is None:
-            return "실행할 보류 계획이 없습니다. 먼저 코드 작업 요청을 보내 주세요."
-
-        plan = pending.plan
-        self._set_code_work_state(channel_id, thread_ts, CodeWorkState.IMPLEMENTING)
-        changed_files: list[str] = []
-        diffs: list[str] = []
-        workspace: Path | None = None
-        rollback_warning: str | None = None
-        try:
-            context = self.context_loader.load(plan.project_name, target_paths=plan.affected_files)
-            if isolate and self.workspaces is not None:
-                workspace, rollback_warning = self._prepare_workspace(
-                    context, plan, channel_id, thread_ts
-                )
-                if workspace is not None:
-                    context = self.context_loader.load(
-                        plan.project_name, target_paths=plan.affected_files, root=workspace
-                    )
-            tools = ProjectExecutionTools(context.root, plan.affected_files)
-            for step in plan.steps:
-                changed_file, diff = tools.write_file(step.path, step.content)
-                changed_files.append(changed_file)
-                diffs.append(diff)
-        except WorkspaceError as exc:
-            logger.warning("workspace_failed project=%s", plan.project_name)
-            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
-            return f"❌ 실행하지 못했습니다. 파일은 변경하지 않았습니다.\n{exc}"
-        except (OSError, ValueError) as exc:
-            logger.warning(
-                "execution_failed project=%s reason=%s applied=%s",
-                plan.project_name,
-                exc,
-                changed_files,
-            )
-            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.FAILED)
-            return render_execution_failure(plan, str(exc), changed_files)
-
-        checks = self._run_verifications(channel_id, thread_ts, plan, tools, changed_files)
-        repair_attempts = 0
-        repair_failure_reason: str | None = None
-        repairer = getattr(agent, "create_repair_steps", None)
-        if callable(repairer):
-            repairer = _with_thread_ids(repairer, channel_id, thread_ts)
-        failure_fingerprints = {_verification_fingerprint(checks)}
-        repair_fingerprints: set[str] = set()
-        while not all(check.success for check in checks) and callable(repairer):
-            if repair_attempts >= DEFAULT_MAX_AUTO_REPAIRS:
-                repair_failure_reason = "자동 복구 한도 초과"
-                break
-            repair_attempts += 1
-            self._set_code_work_state(channel_id, thread_ts, CodeWorkState.REPAIRING)
-            try:
-                repair_steps = repairer(
-                    plan,
-                    _read_existing_files(context.root, plan.affected_files),
-                    checks,
-                )
-                _validate_repair_steps(repair_steps, plan.affected_files)
-                repair_fingerprint = _repair_fingerprint(repair_steps)
-                if repair_fingerprint in repair_fingerprints:
-                    repair_failure_reason = "동일한 자동 복구 diff가 반복되었습니다"
-                    break
-                repair_fingerprints.add(repair_fingerprint)
-                for step in repair_steps:
-                    changed_file, diff = tools.write_file(step.path, step.content)
-                    changed_files.append(changed_file)
-                    diffs.append(diff)
-            except (OSError, ValueError) as exc:
-                logger.warning("repair_failed project=%s reason=%s", plan.project_name, exc)
-                repair_failure_reason = str(exc)
-                break
-            except Exception as exc:
-                # A malformed LLM repair response must end this one confirmed
-                # run safely; it must never escape the Slack listener.
-                logger.warning(
-                    "repair_plan_invalid project=%s category=%s",
-                    plan.project_name,
-                    type(exc).__name__,
-                )
-                repair_failure_reason = "자동 복구 계획을 해석하지 못했습니다"
-                break
-            checks = self._run_verifications(channel_id, thread_ts, plan, tools, changed_files)
-            failure_fingerprint = _verification_fingerprint(checks)
-            if (
-                not all(check.success for check in checks)
-                and failure_fingerprint in failure_fingerprints
-            ):
-                repair_failure_reason = "동일한 검증 실패가 반복되었습니다"
-                break
-            failure_fingerprints.add(failure_fingerprint)
-
-        remaining_risks = _remaining_risks(checks)
-        if workspace is not None and self.workspaces is not None:
-            try:
-                self.workspaces.commit(workspace, plan.affected_files, plan.goal)
-            except WorkspaceError as exc:
-                logger.warning("workspace_commit_failed project=%s", plan.project_name)
-                remaining_risks.append(f"{exc} worktree의 변경은 커밋되지 않았습니다.")
-        result = ExecutionResult(
-            changed_files=changed_files,
-            diffs=diffs,
-            checks=checks,
-            remaining_risks=remaining_risks,
-            repair_attempts=repair_attempts,
-            repair_failure_reason=repair_failure_reason,
-            workspace_branch=(
-                self.workspaces.branch_name(channel_id, thread_ts)
-                if workspace is not None and self.workspaces is not None
-                else None
-            ),
-            workspace_path=str(workspace) if workspace is not None else None,
-            rollback_warning=rollback_warning,
-        )
-        self._last_results[(channel_id, thread_ts)] = result
-        logger.info(
-            "execution_completed project=%s files=%s checks=%s success=%s",
-            plan.project_name,
-            changed_files,
-            [check.name for check in checks],
-            all(check.success for check in checks),
-        )
-        final_state = (
-            CodeWorkState.SUCCEEDED
-            if all(check.success for check in checks)
-            else CodeWorkState.FAILED
-        )
-        self._set_code_work_state(channel_id, thread_ts, final_state)
-        self._record_execution_trace(
-            agent,
-            channel_id,
-            thread_ts,
-            repair_attempts=repair_attempts,
-            termination_reason=(
-                repair_failure_reason
-                or ("verified" if final_state is CodeWorkState.SUCCEEDED else "verification_failed")
-            ),
-        )
-        return render_execution_result(plan, result)
 
     def _run_verifications(
         self,

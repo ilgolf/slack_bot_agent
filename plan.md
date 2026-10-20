@@ -560,5 +560,5 @@ plan-first로 에이전트가 쓴 `docs/linear/plan.md`(2026-10-07)에서 규칙
 - [x] 편집 범위를 정하는 순수 함수(`edit_named_paths*`·`area_plan_for_named_plan`·`plan_first_limits`·`edit_applied_guidance`·`is_plan_follow_request`·`PATH_IN_REQUEST`)를 `code/edit_scope.py`로 옮긴다
 - [x] `_edit_directly`·`_edit_interrupted`·`_edit_rejected`를 `code/direct_edit.py`의 `DirectEditor`로 옮긴다. 검증 실행·상태 기록·마지막 결과·트레이스는 실행 경로와 공유하므로 생성자로 주입하고, 모드 판단 관문 `_direct_edit_root`는 `ExecutionWorkflow`에 둔다
 - [x] `_run_autopilot`·`_autopilot_loop`(자동 진행)을 `code/autopilot.py`의 `Autopilot`으로 옮긴다. `process`는 콜백으로 주입한다
-- [ ] `_execute_pending`(확정된 계획 실행)을 `code/plan_execution.py`로 옮기고, `DirectEditor`와 겹치는 검증·자동 복구 반복을 한곳으로 모은다 (구조 전용, 모으기는 별도 커밋)
+- [x] `_execute_pending`·`_prepare_workspace`(확정된 계획 실행)를 `code/plan_execution.py`의 `PlanExecutor`로 옮긴다. 두 실행 경로의 복구 루프는 방식이 달라(LLM이 복구 step을 내고 코드가 적용 vs. 에이전트가 직접 고치고 검토) 합치지 않는다
 - [ ] `process()`(약 330줄)를 단계별 비공개 메서드로 나눈다
