@@ -563,3 +563,11 @@ plan-first로 에이전트가 쓴 `docs/linear/plan.md`(2026-10-07)에서 규칙
 - [x] `_execute_pending`·`_prepare_workspace`(확정된 계획 실행)를 `code/plan_execution.py`의 `PlanExecutor`로 옮긴다. 두 실행 경로의 복구 루프는 방식이 달라(LLM이 복구 step을 내고 코드가 적용 vs. 에이전트가 직접 고치고 검토) 합치지 않는다
 - [x] `process()`를 명령 분기·`_target_project`(프로젝트 결정)·`_plan_and_preview`(계획 생성과 미리보기)로 나눈다. `process()`는 약 80줄이 된다
 - [x] `_plan_and_preview`를 요청 해석(`edit_scope.interpret_plan_request`)·보호 파일 단계 걸러내기(`drop_unauthorized_protected_steps`)·`_investigate`·`_store_and_preview`로 나눈다. 계획 생성·검증 `try` 블록(약 70줄)은 오류를 응답 문구로 바꾸는 분기와 얽혀 있어 이번에는 그대로 둔다
+
+### B. `edit_scope` 단위 테스트 (2026-10-20, 기존 동작을 고정하는 특성화 테스트. 통합 테스트로만 덮여 있던 순수 함수에 직접 붙인다)
+- [x] `interpret_plan_request`: 이 메시지가 파일을 이름 대면 그 파일이 이기고, 없으면 스레드 맥락의 파일로 돌아간다
+- [x] `interpret_plan_request`: `plan.md 대로` 요청은 plan.md를 쓰기 대상에서 빼고, `계획 짜` 요청은 plan.md를 쓰기 대상에 더한다
+- [x] `drop_unauthorized_protected_steps`: 이름 대지 않은 관리 파일 단계는 버리고 나머지는 남기며, 관리 파일뿐이면 거부한다
+- [x] `edit_named_paths_in_thread`: 앞선 메시지의 관리 파일은 이어지고, plan-follow 요청이면 이어지지 않는다
+- [x] 변경 검증: 각 함수를 일부러 깨뜨리면 새 테스트가 실패한다 (확인 후 되돌림)
+
