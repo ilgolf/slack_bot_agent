@@ -259,6 +259,29 @@ class ExecutionWorkflow:
                 agent,
                 thread_context.user_messages(channel_id, thread_ts),
             )
+        return self._plan_and_preview(
+            agent=agent,
+            project_name=project_name,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            command_text=command_text,
+            contextual_text=contextual_text,
+            autopilot=autopilot,
+        )
+
+    def _plan_and_preview(
+        self,
+        *,
+        agent: object,
+        project_name: str,
+        channel_id: str,
+        thread_ts: str,
+        command_text: str,
+        contextual_text: str,
+        autopilot: bool,
+    ) -> str:
+        """Investigate, plan and validate a code change, then either run it (autopilot)
+        or store it as the thread's pending plan and return the preview to confirm."""
         creator = getattr(agent, "create_execution_plan", None)
         if not callable(creator):
             return "코드 실행 계획에는 LLM 코드 에이전트가 필요합니다."
