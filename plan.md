@@ -558,4 +558,5 @@ plan-first로 에이전트가 쓴 `docs/linear/plan.md`(2026-10-07)에서 규칙
 ### A. 계획 확정 대화 분리 (구조 전용, 동작 불변)
 - [x] `confirm_plan`·`has_plan_review`·`answer_plan_review`와 그 보조(`_PlanReview`·`_Recorded`·`_record_*`·`_next_question`)를 `code/plan_review.py`의 `PlanReviewDialogue`로 옮기고, `ExecutionWorkflow`는 위임만 한다
 - [x] 편집 범위를 정하는 순수 함수(`edit_named_paths*`·`area_plan_for_named_plan`·`plan_first_limits`·`edit_applied_guidance`·`is_plan_follow_request`·`PATH_IN_REQUEST`)를 `code/edit_scope.py`로 옮긴다
-- [ ] `_edit_directly`·`_direct_edit_root`·`_edit_interrupted`·`_edit_rejected`를 `code/direct_edit.py`로 옮긴다 (`_run_verifications`·상태 기록은 실행 경로와 공유하므로 먼저 분리한다)
+- [x] `_edit_directly`·`_edit_interrupted`·`_edit_rejected`를 `code/direct_edit.py`의 `DirectEditor`로 옮긴다. 검증 실행·상태 기록·마지막 결과·트레이스는 실행 경로와 공유하므로 생성자로 주입하고, 모드 판단 관문 `_direct_edit_root`는 `ExecutionWorkflow`에 둔다
+- [ ] `_run_autopilot`·`_autopilot_loop`(자동 진행)을 `code/autopilot.py`로 옮긴다. `process`는 콜백으로 주입한다

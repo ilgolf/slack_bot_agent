@@ -24,6 +24,8 @@ from src.core.plan_guard import is_protected_meta_path
 from src.core.project_guidance import guidance_files
 from src.core.skill_allowlist import claude_skill_names
 
+# Accept a Korean postposition directly after a filename (``plan.md에``)
+# while returning only the project-relative path.
 PATH_IN_REQUEST = re.compile(r"(?<!\S)([\w./-]+\.[A-Za-z0-9]+)(?=$|[\s,.:!?…]|[은는이가을를에의])")
 
 
