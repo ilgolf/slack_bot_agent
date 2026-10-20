@@ -21,14 +21,13 @@ from src.code.context import ProjectContextLoader, SkillRegistry
 from src.code.direct_edit import DirectEditor
 from src.code.edit_scope import (
     PATH_IN_REQUEST,
-    is_plan_follow_request,
+    interpret_plan_request,
 )
 from src.code.executor import AwaitingProjectStore, PendingPlanStatus, PendingPlanStore
 from src.code.markers import (
     CODE_INTEGRATION_MARKERS,
     CODE_MARKERS,
     CODE_PLANNING_MARKERS,
-    PLAN_AUTHORING_MARKERS,
     PLAN_CONTINUATION_MARKERS,
     is_plan_follow_work_request,
 )
@@ -309,43 +308,13 @@ class ExecutionWorkflow:
             state=CodeWorkState.DISCOVERING,
         )
 
-        # A file named in this exact message always wins — it's what the user
-        # just said, e.g. redirecting a pending plan to a different file. Only
-        # fall back to thread context when this message names nothing at all.
-        explicit_target_paths = PATH_IN_REQUEST.findall(command_text)
-        target_paths = explicit_target_paths or PATH_IN_REQUEST.findall(contextual_text)
-        plan_follow_request = is_plan_follow_request(command_text) or (
-            not explicit_target_paths and is_plan_follow_request(contextual_text)
-        )
-        # plan.md is already loaded into planning context via `target_paths`
-        # below, so when it's the thing being followed, its own content is
-        # sufficient grounding for a brand-new feature that has no prior
-        # src/tests code to investigate — the model isn't limited to only
-        # modifying what analyze() happened to read.
-        plan_document_is_evidence = plan_follow_request and any(
-            Path(path).name.casefold() == "plan.md" for path in target_paths
-        )
-        linear_plan_document = (
-            "linear" in command_text.casefold()
-            and any(Path(path).name.casefold() == "plan.md" for path in explicit_target_paths)
-            and not plan_follow_request
-        )
-        # "Follow plan.md" names the file as a read-only specification, not
-        # as a requested write target.  Keep it in planning context, but do
-        # not let that wording authorize the model to overwrite it.
-        user_writable_paths = explicit_target_paths
-        if plan_follow_request:
-            user_writable_paths = [
-                path for path in explicit_target_paths if not is_protected_meta_path(path)
-            ]
-        # Asking for a plan to be written authorizes plan.md as a write target.
-        # Every other proposed file still follows the usual rules. Judged from this
-        # message alone, never thread context.
-        plan_authoring = not plan_follow_request and any(
-            marker in command_text.casefold() for marker in PLAN_AUTHORING_MARKERS
-        )
-        if plan_authoring:
-            user_writable_paths = list(dict.fromkeys([*user_writable_paths, "plan.md"]))
+        request = interpret_plan_request(command_text, contextual_text)
+        explicit_target_paths = request.explicit_target_paths
+        target_paths = request.target_paths
+        plan_follow_request = request.plan_follow_request
+        plan_document_is_evidence = request.plan_document_is_evidence
+        linear_plan_document = request.linear_plan_document
+        user_writable_paths = request.user_writable_paths
         investigator = getattr(agent, "analyze", None)
         # An explicitly named file is already a bounded, first-party source
         # for the planner. Do not make a plan-file creation/edit request fail

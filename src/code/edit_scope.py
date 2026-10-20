@@ -134,3 +134,66 @@ def is_plan_follow_request(text: str) -> bool:
     if "plan.md" not in normalized:
         return False
     return any(marker in normalized for marker in _PLAN_REFERENCE_MARKERS)
+
+
+@dataclass(frozen=True)
+class PlanRequest:
+    """How one message reads as a request to plan code: which files it points at and which
+    of them it authorizes as write targets."""
+
+    explicit_target_paths: list[str]
+    target_paths: list[str]
+    plan_follow_request: bool
+    plan_document_is_evidence: bool
+    linear_plan_document: bool
+    user_writable_paths: list[str]
+
+
+def interpret_plan_request(command_text: str, contextual_text: str) -> PlanRequest:
+    """`command_text` is this message alone; `contextual_text` adds the thread's history,
+    used only where the message itself names nothing."""
+    # A file named in this exact message always wins — it's what the user
+    # just said, e.g. redirecting a pending plan to a different file. Only
+    # fall back to thread context when this message names nothing at all.
+    explicit_target_paths = PATH_IN_REQUEST.findall(command_text)
+    target_paths = explicit_target_paths or PATH_IN_REQUEST.findall(contextual_text)
+    plan_follow_request = is_plan_follow_request(command_text) or (
+        not explicit_target_paths and is_plan_follow_request(contextual_text)
+    )
+    # plan.md is already loaded into planning context via `target_paths`
+    # below, so when it's the thing being followed, its own content is
+    # sufficient grounding for a brand-new feature that has no prior
+    # src/tests code to investigate — the model isn't limited to only
+    # modifying what analyze() happened to read.
+    plan_document_is_evidence = plan_follow_request and any(
+        Path(path).name.casefold() == "plan.md" for path in target_paths
+    )
+    linear_plan_document = (
+        "linear" in command_text.casefold()
+        and any(Path(path).name.casefold() == "plan.md" for path in explicit_target_paths)
+        and not plan_follow_request
+    )
+    # "Follow plan.md" names the file as a read-only specification, not
+    # as a requested write target.  Keep it in planning context, but do
+    # not let that wording authorize the model to overwrite it.
+    user_writable_paths = explicit_target_paths
+    if plan_follow_request:
+        user_writable_paths = [
+            path for path in explicit_target_paths if not is_protected_meta_path(path)
+        ]
+    # Asking for a plan to be written authorizes plan.md as a write target.
+    # Every other proposed file still follows the usual rules. Judged from this
+    # message alone, never thread context.
+    plan_authoring = not plan_follow_request and any(
+        marker in command_text.casefold() for marker in PLAN_AUTHORING_MARKERS
+    )
+    if plan_authoring:
+        user_writable_paths = list(dict.fromkeys([*user_writable_paths, "plan.md"]))
+    return PlanRequest(
+        explicit_target_paths=explicit_target_paths,
+        target_paths=target_paths,
+        plan_follow_request=plan_follow_request,
+        plan_document_is_evidence=plan_document_is_evidence,
+        linear_plan_document=linear_plan_document,
+        user_writable_paths=user_writable_paths,
+    )
